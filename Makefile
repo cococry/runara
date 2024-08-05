@@ -1,7 +1,7 @@
 CC=gcc
-INCS=`pkg-config --cflags glfw3 cglm` -Ivendor/glad/include -Ivendor/stb_image/ 
+INCS=`pkg-config --cflags glfw3 cglm` -Ivendor/glad/include -Ivendor/stb_image/ -Ivendor/uthash/include
 LIBS=-lclipboard -lm -lGL -lfreetype -lharfbuzz
-CFLAGS+=${INCS} ${LIBS} -O2 -ffast-math 
+CFLAGS+=${INCS} ${LIBS} -O3 -ffast-math
 all: lib/runara.a
 lib/runara.a: lib/runara.o
 	ar cr lib/librunara.a lib/*.o
@@ -16,6 +16,7 @@ clean:
 install: all
 	cp lib/librunara.a /usr/local/lib/ 
 	cp -r include/runara /usr/local/include/ 
+	cp -r ./vendor/uthash/include/uthash /usr/local/include
 
 uninstall:
 	rm -f /usr/local/lib/librunara.a
