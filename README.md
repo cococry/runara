@@ -96,5 +96,5 @@ sudo make install
 
 ## Documentation
 
-For documentation of the library, you can visit the [wiki](https://github.com/cococry/runara/wiki)
-or just take a look at the [header file](https://github.com/cococry/runara/blob/master/include/runara/runara.h) where every function is well documented
+For documentation of the library, just take a look at the Runara [header file](https://github.com/cococry/runara/blob/master/include/runara/runara.h) where every function is well documented.
+This is in my opinion the best approach to documenting as it is straightly bound to actually deleloping with the library.
