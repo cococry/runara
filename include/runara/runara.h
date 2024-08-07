@@ -108,7 +108,7 @@ typedef struct {
   // The ID of the font
   uint32_t id;
   // The with in pixels of a space character 
-  // within the fon
+  // within the font
   uint32_t space_w;
   // The number of spaces that are used 
   // to represent a tab character (default is 4)
