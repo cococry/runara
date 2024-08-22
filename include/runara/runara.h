@@ -523,6 +523,18 @@ RnFont rn_load_font(RnState* state, const char* filepath, uint32_t size);
 void rn_set_font_size(RnState* state, RnFont* font, uint32_t size); 
 
 /*
+ * @brief Uses fontconfig to retrieve the actual system filepath 
+ * of a given font family name (e.g "Arial" => "/usr/share/fonts/TTF/Arial.ttf")
+ *
+ * NOTE: This function initializes & de-initializes a fontconfig context 
+ * to retrieve the filepath everytime it gets called.
+ *
+ * @param[in] fontname The name of the font to get the full filepath of 
+ * @return The filepath of the fontfile matching the font name (NULL if no match)
+ * */
+const char* rn_font_file_from_name(const char* fontname);
+
+/*
  * @brief Deallocates the OpenGL texture object 
  * associated with the ID of a given texture.
  *

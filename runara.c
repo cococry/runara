@@ -1,6 +1,7 @@
 #include "include/runara/runara.h"
 #include <cglm/mat4.h>
 #include <cglm/types-struct.h>
+#include <fontconfig/fontconfig.h>
 
 #include <glad/glad.h>
 #define STB_IMAGE_IMPLEMENTATION
@@ -26,7 +27,7 @@
 #define RN_TRACE(...) { printf("runara: [TRACE]: ");  printf(__VA_ARGS__); printf("\n"); } 
 #define RN_INFO(...)  { printf("runara: [INFO]: ");   printf(__VA_ARGS__); printf("\n"); } 
 #define RN_WARN(...)  { printf("runara: [WARN]: ");   printf(__VA_ARGS__); printf("\n"); } 
-#define RN_ERROR(...) { printf("runara: [ERROR]: ");  printf(__VA_ARGS__); printf("\n"); } 
+#define RN_ERROR(...) { fprintf(stderr, "runara: [ERROR]: ");  printf(__VA_ARGS__); printf("\n"); } 
 
 static uint32_t         shader_create(GLenum type, const char* src);
 static RnShader         shader_prg_create(const char* vert_src, const char* frag_src);
@@ -867,6 +868,9 @@ RnFont rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
                        RnTextureFiltering filter_mode) {
   RnFont font;
   FT_Face face;
+
+  if(!size) return font;
+
   // Create a new face from the filepath with freetype
   if(FT_New_Face(state->ft, filepath, 0, &face)) {
     RN_ERROR("Failed to load font file '%s'.", filepath);
@@ -933,6 +937,49 @@ rn_set_font_size(RnState* state, RnFont* font, uint32_t size) {
   rn_reload_font_harfbuzz_cache(state, *font);
   rn_reload_font_glyph_cache(state, font);
 } 
+
+const char* 
+rn_font_file_from_name(const char* fontname) {
+  if(!fontname) return NULL;
+
+  // Initialize fontconfig context
+  if(!FcInit()) {
+    RN_ERROR("Failed to initialize fontconfig.");
+    FcFini();
+    return NULL;
+  }
+
+  // Create fontconfig pattern
+  FcPattern* pattern = FcPatternCreate();
+  if(!pattern) {
+    RN_ERROR("Failed to create fontconfig pattern.");
+    FcFini();
+    return NULL;
+  }
+
+  // Add the font name to the pattern
+  FcPatternAddString(pattern, FC_FAMILY, (FcChar8*)fontname);
+
+  // Get the best match for the given family
+  FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+  FcDefaultSubstitute(pattern);
+
+  FcResult res;
+  FcPattern* match = FcFontMatch(NULL, pattern, &res);
+
+  if(match) {
+    FcChar8* filepath = NULL;
+
+    if(FcPatternGetString(match, FC_FILE, 0, &filepath) == FcResultMatch) {
+      FcPatternDestroy(pattern);
+      FcFini();
+      return (const char*)filepath;
+    }
+  }
+  FcPatternDestroy(pattern);
+  FcFini();
+  return NULL;
+}
 
 void
 rn_free_texture(RnTexture* tex) {
