@@ -408,7 +408,7 @@ typedef struct {
  * @example
  * RnState state = rn_init(800, 600, glfwGetProcAddress);
  */
-RnState rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader);
+RnState* rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader);
 
 /**
  * @brief Terminates the Runara library 
@@ -560,6 +560,15 @@ void rn_free_texture(RnTexture* tex);
  * @param[in] font The font to deallocate
  * */
 void rn_free_font(RnState* state, RnFont* font);
+
+/*
+ * @brief Clears the OpenGL color buffer and 
+ * fills it with a given color
+ *
+ * @param[in] color The color to clear the OpenGL 
+ * screen with
+ * */
+void rn_clear_color(RnColor color);
 
 /*
  * @brief Begins rendering operations with 

@@ -762,9 +762,9 @@ djb2_hash(const unsigned char *str) {
 // ===========================================================
 // ----------------Public API Functions ---------------------- 
 // ===========================================================
-RnState
+RnState*
 rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
-  RnState state;
+  RnState* state = malloc(sizeof(*state));
 
   // Set locale to ensure that unicode is working
   setlocale(LC_ALL, "");
@@ -776,33 +776,39 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
   }
 
   // Set default state
-  state.render_w = render_w;
-  state.render_h = render_h;
-  state.render.tex_count = 0;
-  state.drawcalls = 0;
+  state->render_w = render_w;
+  state->render_h = render_h;
+  state->render.tex_count = 0;
+  state->drawcalls = 0;
 
 
   // Initializing the renderer
-  renderer_init(&state);
+  renderer_init(state);
 
   // Initializing FreeType
-  if(FT_Init_FreeType(&state.ft) != 0) {
+  if(FT_Init_FreeType(&state->ft) != 0) {
     RN_ERROR("Failed to initialize FreeType.");
     return state;
   }
   
-  init_glyph_cache(&state.glyph_cache, 32);
-  init_hb_cache(&state.hb_cache, 32);
+  init_glyph_cache(&state->glyph_cache, 32);
+  init_hb_cache(&state->hb_cache, 32);
 
-  state.init = true;
+  state->init = true;
 
   return state;
 }
 
 void 
 rn_terminate(RnState* state) {
+  // Free glyph- & harfbuzz-caches
+  free_glyph_cache(&state->glyph_cache);
+  free_hb_cache(&state->hb_cache);
+
   // Terminate freetype
   FT_Done_FreeType(state->ft);
+
+  free(state);
 }
 
 void
@@ -811,7 +817,7 @@ rn_resize_display(RnState* state, uint32_t render_w, uint32_t render_h) {
   state->render_w = render_w;
   state->render_h = render_h;
 
-  // Notify OpenGL about the dimension change
+  // Send the dimension chnage to OpenGL 
   glViewport(0, 0, render_w, render_h);
   set_projection_matrix(state);
 }
@@ -1001,6 +1007,13 @@ rn_free_font(RnState* state, RnFont* font) {
 
   // Zero-out the font
   memset(font, 0, sizeof(*font));
+}
+
+void 
+rn_clear_color(RnColor color) {
+  vec4s zto = rn_color_to_zto(color);
+  glClearColor(zto.r, zto.g, zto.b, zto.a);
+  glClear(GL_COLOR_BUFFER_BIT);
 }
 
 void
@@ -1326,6 +1339,8 @@ RnTextProps rn_text_render_ex(RnState* state,
   const int32_t line_seperator  = 0x2028;
   const int32_t paragraph_seperator = 0x2029;
 
+  float textheight = 0;
+
   for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
@@ -1341,6 +1356,7 @@ RnTextProps rn_text_render_ex(RnState* state,
       float font_height = font->face->size->metrics.height / 64.0f;
       pos.x = start_pos.x;
       pos.y += line_height ? line_height : font_height;
+      textheight += line_height ? line_height : font_height;
       continue;
     }
 
@@ -1368,7 +1384,13 @@ RnTextProps rn_text_render_ex(RnState* state,
     };
 
     // Render the glyph
-    rn_glyph_render(state, glyph, *font, glyph_pos, color);
+    if(render) {
+      rn_glyph_render(state, glyph, *font, glyph_pos, color);
+    }
+
+    if(glyph.height > textheight) {
+      textheight = glyph.height;
+    }
 
     // Advance to the next glyph
     pos.x += x_advance;
@@ -1377,7 +1399,7 @@ RnTextProps rn_text_render_ex(RnState* state,
 
   return (RnTextProps){
     .width = pos.x - start_pos.x, 
-    .height = pos.y - start_pos.y
+    .height = textheight
   };
 }
 
