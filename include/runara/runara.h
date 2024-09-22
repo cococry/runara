@@ -470,6 +470,32 @@ RnTexture rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering
 */
 RnTexture rn_load_texture(const char* filepath);
 
+/**
+ * @brief Loads a texture from a given filepath and assigns the 
+ * texture ID, width and height to the given argument pointers. 
+ *
+ * @param[in] filepath The filepath of the image 
+ * to load the OpenGL texture off of
+ *
+ * @param[out] o_tex_id The OpenGL texture ID of the 
+ * loaded texture.
+ * @param[out] o_tex_width The width of the 
+ * loaded texture.
+ * @param[out] o_tex_height The height of the 
+ * loaded texture.
+ *
+ * @param[in] filter The filter/ng mode used for the texture 
+ * ( 0 => RN_TEX_FILTER_LINEAR
+ *   1 => RN_TEX_FILTER_NEAREST )
+ *
+*/
+void rn_load_texture_base_types(
+    const char* filepath, 
+    uint32_t* o_tex_id, 
+    uint32_t* o_tex_width, 
+    uint32_t* o_tex_height,
+    uint32_t filter);
+
 
 /**
  * @brief Loads a font from a given filepath with FreeType 
@@ -571,6 +597,22 @@ void rn_free_font(RnState* state, RnFont* font);
 void rn_clear_color(RnColor color);
 
 /*
+ * @brief Clears the OpenGL color buffer and 
+ * fills it with r, g, b and a float values
+ * Channel range: 0-255 
+ *
+ * @param[in] r The red channel of the color
+ * @param[in] g The green channel of the color
+ * @param[in] b The blue channel of the color
+ * @param[in] a The alpha channel of the color
+ * */
+void rn_clear_color_base_types(
+    unsigned char r, 
+    unsigned char g, 
+    unsigned char b, 
+    unsigned char a);
+
+/*
  * @brief Begins rendering operations with 
  * Runara
  *
@@ -664,9 +706,10 @@ RnVertex* rn_add_vertex(
  *
  * @param[in] pos The position of the shape 
  * @param[in] pos The size of the shape 
+ * @param[in] rotation_angle The rotation angle (in degrees) of the shape 
  * @param[out] transform The created transform matrix
  * */
-void rn_transform_make(vec2s pos, vec2s size, mat4* transform);
+void rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transform);
 
 /*
  * @brief Returns the index of 
@@ -746,6 +789,7 @@ void rn_reload_font_harfbuzz_cache(RnState* state, RnFont font);
  * @param[in] state The state of the library 
  * @param[in] pos The position of the rectangle (px) 
  * @param[in] size The size of the rectangle (px)
+ * @param[in] rotation_angle The rotation angle of the rectangle (degrees)
  * @param[in] color The color of the rectangle 
  * @param[in] border_color The border color of 
  * the rectangle (ignored if border_width <= 0)
@@ -755,7 +799,8 @@ void rn_reload_font_harfbuzz_cache(RnState* state, RnFont font);
 void rn_rect_render_ex(
     RnState* state, 
     vec2s pos, 
-    vec2s size, 
+    vec2s size,
+    float rotation_angle,
     RnColor color, 
     RnColor border_color, 
     float border_width,
@@ -776,6 +821,32 @@ void rn_rect_render(
     vec2s pos, 
     vec2s size, 
     RnColor color);
+
+/*
+ * @brief Uses 'rn_rect_render()' but with base types.
+ *
+ * @param[in] state The state of the library 
+ * @param[in] posx The X position of the rectangle (px)
+ * @param[in] posy The Y position of the rectangle (px)
+ * @param[in] width The width of the rectangle (px)
+ * @param[in] height The height of the rectangle (px)
+ * @param[in] rotation_angle The rotation angle of the rectangle (degrees)
+ * @param[in] color_r The red channel of the rectangle 
+ * @param[in] color_g The green channel of the rectangle 
+ * @param[in] color_b The blue channel of the rectangle 
+ * @param[in] color_a The alpha channel of the rectangle 
+ * */
+void rn_rect_render_base_types(
+    RnState* state, 
+    float posx,
+    float posy,
+    float width,
+    float height,
+    float rotation_angle,
+    unsigned char color_r,
+    unsigned char color_g,
+    unsigned char color_b,
+    unsigned char color_a);
 
 /*
  * @brief Renders a given texture on 
@@ -802,6 +873,7 @@ void rn_rect_render(
 void rn_image_render_adv(
     RnState* state, 
     vec2s pos, 
+    float rotation_angle,
     RnColor color, 
     RnTexture tex,
     vec2s* texcoords,
@@ -828,6 +900,7 @@ void rn_image_render_adv(
 void rn_image_render_ex(
     RnState* state, 
     vec2s pos, 
+    float rotation_angle,
     RnColor color, 
     RnTexture tex,
     RnColor border_color,
@@ -856,6 +929,28 @@ void rn_image_render(
     vec2s pos, 
     RnColor color, 
     RnTexture tex);
+
+/*
+ * @brief Uses 'rn_image_base_types()' but with base types.
+ *
+ * @param[in] state The state of the library 
+ * @param[in] posx The X position of the rectangle (px)
+ * @param[in] posy The Y position of the rectangle (px)
+ * @param[in] color_r The red channel of the image 
+ * @param[in] color_g The green channel of the image 
+ * @param[in] color_b The blue channel of the image 
+ * @param[in] color_a The alpha channel of the image 
+ * */
+void rn_image_render_base_types(
+    RnState* state, 
+    float posx, 
+    float posy, 
+    float rotation_angle,
+    unsigned char color_r, 
+    unsigned char color_g, 
+    unsigned char color_b, 
+    unsigned char color_a, 
+    uint32_t tex_id, uint32_t tex_width, uint32_t tex_height);
 
 /*
  * @brief Renders a given text with a given 

@@ -687,7 +687,7 @@ void free_hb_cache(RnHarfbuzzCache* cache) {
 }
 
 RnHarfbuzzText* get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const char* str) {
-  uint64_t hash = djb2_hash(str);
+  uint64_t hash = djb2_hash((unsigned char*)str);
   for(uint32_t i = 0; i < cache.size; i++) {
     if(cache.texts[i].hash == hash && 
       cache.texts[i].font_id == font.id) {
@@ -825,6 +825,51 @@ rn_resize_display(RnState* state, uint32_t render_w, uint32_t render_h) {
 RnTexture 
 rn_load_texture(const char* filepath) {
   return rn_load_texture_ex(filepath, false, RN_TEX_FILTER_LINEAR);
+}
+
+void 
+rn_load_texture_base_types(
+  const char* filepath, 
+  uint32_t* o_tex_id, 
+  uint32_t* o_tex_width, 
+  uint32_t* o_tex_height,
+  uint32_t filter) {
+  int width, height, channels;
+
+  // Load image data with stb_image
+  unsigned char* image = stbi_load(filepath, &width, &height, &channels, STBI_rgb_alpha);
+  if (!image) {
+    RN_ERROR("Failed to load texture at '%s'.", filepath);
+    return;
+  }
+
+  // Create OpenGL texture 
+  glGenTextures(1, o_tex_id);
+  glBindTexture(GL_TEXTURE_2D, *o_tex_id); 
+
+  // Set texture parameters
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  switch(filter) {
+    case RN_TEX_FILTER_LINEAR:
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      break;
+    case RN_TEX_FILTER_NEAREST:
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      break;
+  }
+
+  // Load texture data
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  // Free image data CPU side 
+  stbi_image_free(image); 
+  
+  *o_tex_width = width;
+  *o_tex_height = height;
+
 }
 
 RnTexture
@@ -1016,6 +1061,18 @@ rn_clear_color(RnColor color) {
   glClear(GL_COLOR_BUFFER_BIT);
 }
 
+void 
+rn_clear_color_base_types(
+    unsigned char r, 
+    unsigned char g, 
+    unsigned char b, 
+    unsigned char a) {
+  RnColor color = (RnColor){r, g, b, a};
+  vec4s zto = rn_color_to_zto(color);
+  glClearColor(zto.r, zto.g, zto.b, zto.a);
+  glClear(GL_COLOR_BUFFER_BIT);
+}
+
 void
 rn_begin(RnState* state) {
   renderer_begin(state);
@@ -1096,18 +1153,31 @@ rn_add_vertex_ex(
 }
 
 void
-rn_transform_make(vec2s pos, vec2s size, mat4* transform) {
+rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transform) {
   mat4 translate; 
   mat4 scale;
+  mat4 rotation;
+
   vec3 pos_xyz = {pos.x, pos.y, 0.0f};
-  vec3 size_xyz = {size.x, size.y, 0.0f};
+  vec3 size_xyz = {size.x, size.y, 1.0f};  
+  vec3 rotation_axis = {0.0f, 0.0f, 1.0f};
+
   // Translating (positioning)
   glm_translate_make(translate, pos_xyz);
+
   // Scaling
-  glm_scale_make(scale, size_xyz);
-  // Multiply both matrices
-  glm_mat4_mul(translate,scale, *transform);
+  glm_scale_make(scale, size_xyz); 
+
+  // Rotation
+  float rad = glm_rad(rotation_angle);
+  glm_rotate_make(rotation, rad, rotation_axis);
+
+  glm_mat4_identity(*transform);
+
+  glm_mat4_mul(translate, rotation, *transform); 
+  glm_mat4_mul(*transform, scale, *transform); 
 }
+
 
 float rn_tex_index_from_tex(RnState* state, RnTexture tex) {
   float tex_index = -1.0f;
@@ -1186,6 +1256,7 @@ rn_rect_render_ex(
   RnState* state, 
   vec2s pos, 
   vec2s size, 
+  float rotation_angle,
   RnColor color, 
   RnColor border_color, 
   float border_width,
@@ -1207,7 +1278,7 @@ rn_rect_render_ex(
 
   // Calculating the transform matrix
   mat4 transform;
-  rn_transform_make(pos_matrix, size_matrix, &transform);
+  rn_transform_make(pos_matrix, size_matrix, rotation_angle, &transform);
 
   // Adding the vertices to the batch renderer
   for(uint32_t i = 0; i < 4; i++) {
@@ -1225,13 +1296,31 @@ void rn_rect_render(
   vec2s pos, 
   vec2s size, 
   RnColor color) {
-  return rn_rect_render_ex(state, pos, size, color, 
+  return rn_rect_render_ex(state, pos, size, 0.0f, color, 
+                           RN_NO_COLOR, 0.0f, 0.0f);
+}
+
+void rn_rect_render_base_types(
+  RnState* state, 
+  float posx,
+  float posy,
+  float width,
+  float height,
+  float rotation_angle,
+  unsigned char color_r,
+  unsigned char color_g,
+  unsigned char color_b,
+  unsigned char color_a) {
+  return rn_rect_render_ex(state, (vec2s){posx, posy}, 
+                           (vec2s){width, height}, rotation_angle, 
+                           (RnColor){color_r, color_g, color_b, color_a}, 
                            RN_NO_COLOR, 0.0f, 0.0f);
 }
 
 void rn_image_render_adv(
   RnState* state, 
   vec2s pos, 
+  float rotation_angle,
   RnColor color, 
   RnTexture tex,
   vec2s* texcoords,
@@ -1260,7 +1349,7 @@ void rn_image_render_adv(
 
   // Create transform matrix
   mat4 transform;
-  rn_transform_make(pos, (vec2s){tex.width, tex.height}, &transform);
+  rn_transform_make(pos, (vec2s){tex.width, tex.height}, rotation_angle, &transform);
 
   // Add vertices
   for (uint32_t i = 0; i < 4; ++i) {
@@ -1277,6 +1366,7 @@ void rn_image_render_adv(
 void rn_image_render_ex(
   RnState* state, 
   vec2s pos, 
+  float rotation_angle,
   RnColor color, 
   RnTexture tex,
   RnColor border_color,
@@ -1289,7 +1379,7 @@ void rn_image_render_ex(
     (vec2s){1.0f, 1.0f}, 
     (vec2s){0.0f, 1.0f} 
   };
-  rn_image_render_adv(state, pos, color, 
+  rn_image_render_adv(state, pos, rotation_angle, color, 
                       tex, texcoords, false,
                       border_color, border_width,
                       corner_radius);
@@ -1300,9 +1390,27 @@ void rn_image_render(
   vec2s pos, 
   RnColor color, 
   RnTexture tex) {
-  rn_image_render_ex(state, pos, color, tex,
+  rn_image_render_ex(state, pos, 0.0f, color, tex,
                      RN_NO_COLOR, 0.0f, 0.0f);
 }
+
+void rn_image_render_base_types(
+  RnState* state, 
+  float posx, 
+  float posy, 
+  float rotation_angle,
+  unsigned char color_r, 
+  unsigned char color_g, 
+  unsigned char color_b, 
+  unsigned char color_a, 
+  uint32_t tex_id, uint32_t tex_width, uint32_t tex_height) {
+
+  rn_image_render_ex(state, (vec2s){posx, posy}, rotation_angle, 
+                  (RnColor){color_r, color_g, color_b, color_a},
+                  (RnTexture){.id = tex_id, .width = tex_width, .height = tex_height},
+                  RN_NO_COLOR,0.0f,0.0f);
+}
+
 
 RnTextProps rn_text_render_ex(RnState* state, 
                               const char* text, 
@@ -1426,7 +1534,7 @@ void rn_glyph_render(
     .height = glyph.height
   };
 
-  rn_image_render_adv(state, (vec2s){xpos, ypos}, 
+  rn_image_render_adv(state, (vec2s){xpos, ypos}, 0.0f,
                       color, tex, texcoords, true,
                       RN_NO_COLOR, 0.0f,
                       0.0f);
