@@ -34,7 +34,7 @@
 // Defines the count of rendered elements in the batch renderer 
 // before it creates a new batch.
 #define RN_MAX_RENDER_BATCH 10000
-// Defines the maximum number of textures with different IDs can 
+// Defines the maximum number of textures with different IDs that can 
 // be rendered within one batch in the batch renderer.
 #define RN_MAX_TEX_COUNT_BATCH 32
 
@@ -49,11 +49,11 @@ typedef void* (*RnGLLoader)(const char *name);
  * that are used to filter OpenGL textures
  */
 typedef enum {
-  // Smooths textures by averaging colors of 
+  // Smoothes textures by averaging colors of 
   // surrounding texels, reducing pixelation and 
   // producing a more blended appearance.
   RN_TEX_FILTER_LINEAR = 0,
-  // selects the color of the nearest texel without 
+  // Selects the color of the nearest texel without 
   // averaging, resulting in a blocky, pixelated 
   // texture appearance.
   RN_TEX_FILTER_NEAREST
