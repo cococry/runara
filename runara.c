@@ -249,6 +249,14 @@ renderer_init(RnState* state) {
   glVertexAttribPointer(9, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
                         (void*)(intptr_t*)offsetof(RnVertex, is_text));
   glEnableVertexAttribArray(9);
+  
+  glVertexAttribPointer(10, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
+                        (void*)(intptr_t*)offsetof(RnVertex, min_coord));
+  glEnableVertexAttribArray(10);
+  
+  glVertexAttribPointer(11, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
+                        (void*)(intptr_t*)offsetof(RnVertex, max_coord));
+  glEnableVertexAttribArray(11);
 
   /* Shader source code*/
 
@@ -265,6 +273,8 @@ renderer_init(RnState* state) {
     "layout (location = 7) in vec2 a_pos_px;\n"
     "layout (location = 8) in float a_corner_radius;\n"
     "layout (location = 9) in float a_is_text;\n"
+    "layout (location = 10) in vec2 a_min_coord;\n"
+    "layout (location = 11) in vec2 a_max_coord;\n"
 
     "uniform mat4 u_proj;\n"
     "out vec4 v_border_color;\n"
@@ -276,6 +286,8 @@ renderer_init(RnState* state) {
     "flat out vec2 v_pos_px;\n"
     "flat out float v_corner_radius;\n"
     "flat out float v_is_text;\n"
+    "out vec2 v_min_coord;\n"
+    "out vec2 v_max_coord;\n"
 
     "void main() {\n"
     "v_color = a_color;\n"
@@ -287,6 +299,8 @@ renderer_init(RnState* state) {
     "v_pos_px = a_pos_px;\n"
     "v_corner_radius = a_corner_radius;\n"
     "v_is_text = a_is_text;\n"
+    "v_min_coord = a_min_coord;\n"
+    "v_max_coord = a_max_coord;\n"
     "gl_Position = u_proj * vec4(a_pos.x, a_pos.y, 0.0f, 1.0);\n"
     "}\n";
 
@@ -306,12 +320,23 @@ renderer_init(RnState* state) {
     "flat in float v_is_text;\n"
     "uniform sampler2D u_textures[32];\n"
     "uniform vec2 u_screen_size;\n"
+    "in vec2 v_min_coord;\n"
+    "in vec2 v_max_coord;\n"
 
     "float rounded_box_sdf(vec2 center_pos, vec2 size, float radius) {\n"
     "    return length(max(abs(center_pos)-size+radius,0.0))-radius;\n"
     "}\n"
 
     "void main() {\n"
+    "     if(u_screen_size.y - gl_FragCoord.y < v_min_coord.y && v_min_coord.y != -1) {\n"
+    "         discard;\n"
+    "     }\n"
+    "     if(u_screen_size.y - gl_FragCoord.y > v_max_coord.y && v_max_coord.y != -1) {\n"
+    "         discard;\n"
+    "     }\n"
+    "     if ((gl_FragCoord.x < v_min_coord.x && v_min_coord.x != -1) || (gl_FragCoord.x > v_max_coord.x && v_max_coord.x != -1)) {\n"
+    "         discard;\n" 
+    "     }\n"
     " if(v_is_text == 1.0) {\n"
     "   vec4 sampled = vec4(1.0, 1.0, 1.0, texture(u_textures[int(v_tex_index)], v_texcoord).r);\n"
     "   o_color = vec4(v_color.rgb, 1.0) * sampled;\n"
@@ -344,10 +369,7 @@ renderer_init(RnState* state) {
     "       } else {\n"
     "           fill_color = display_color.xyz;\n"
     "       }\n"
-    "       if(v_border_width != 0.0f)\n" 
-    "         o_color =  mix(vec4(0.0f, 0.0f, 0.0f, 0.0f), vec4(fill_color, smoothed_alpha), smoothed_alpha);\n"
-    "       else\n" 
-    "         o_color = mix(vec4(0.0f, 0.0f, 0.0f, 0.0f), vec4(fill_color, display_color.a), smoothed_alpha);\n"
+    "       o_color =  mix(vec4(0.0f, 0.0f, 0.0f, 0.0f), vec4(fill_color, display_color.a), smoothed_alpha);\n"
     "     } else {\n"
     "       vec4 fill_color = opaque_color;\n"
     "       if(v_border_width != 0.0f) {\n"
@@ -781,6 +803,8 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
   state->render.tex_count = 0;
   state->drawcalls = 0;
 
+  state->cull_start = (vec2s){-1, -1};
+  state->cull_end = (vec2s){-1, -1};
 
   // Initializing the renderer
   renderer_init(state);
@@ -813,6 +837,9 @@ rn_terminate(RnState* state) {
 
 void
 rn_resize_display(RnState* state, uint32_t render_w, uint32_t render_h) {
+  if(state->render_w == render_w && 
+    state->render_h == render_h) return;
+
   // Set render dimensions
   state->render_w = render_w;
   state->render_h = render_h;
@@ -914,60 +941,60 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
   return tex;
 }
 
-RnFont rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
+RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
                        uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w,
                        RnTextureFiltering filter_mode) {
-  RnFont font;
+  RnFont* font = malloc(sizeof(*font));
   FT_Face face;
 
-  if(!size) return font;
+  if(!size) return NULL;
 
   // Create a new face from the filepath with freetype
   if(FT_New_Face(state->ft, filepath, 0, &face)) {
     RN_ERROR("Failed to load font file '%s'.", filepath);
-    return font;
+    return NULL;
   }
 
   // Set the pixel size of the font
   FT_Set_Pixel_Sizes(face, 0, size);
 
-  font.face = face;
-  font.size = size;
+  font->face = face;
+  font->size = size;
 
   // Create the harfbuzz font handle
-  font.hb_font = hb_ft_font_create(font.face, NULL);
+  font->hb_font = hb_ft_font_create(font->face, NULL);
 
-  font.id = state->font_id++;
+  font->id = state->font_id++;
 
-  font.atlas_w = atlas_w;
-  font.atlas_h = atlas_h;
-  font.atlas_row_h = 0;
-  font.atlas_x = 0;
-  font.atlas_y = 0;
+  font->atlas_w = atlas_w;
+  font->atlas_h = atlas_h;
+  font->atlas_row_h = 0;
+  font->atlas_x = 0;
+  font->atlas_y = 0;
 
-  font.tab_w = tab_w;
+  font->tab_w = tab_w;
 
-  font.filter_mode = filter_mode;
+  font->filter_mode = filter_mode;
 
   // Create the OpenGL font atlas texture 
-  create_font_atlas(&font);
+  create_font_atlas(font);
 
   // Get the width of the space character within the 
   // font to know how wide tab character should be.
-  if (FT_Load_Char(font.face, ' ', FT_LOAD_DEFAULT) != 0) {
+  if (FT_Load_Char(font->face, ' ', FT_LOAD_DEFAULT) != 0) {
     return font;
   }
 
   FT_GlyphSlot slot = face->glyph;
-  font.space_w = slot->metrics.width >> 6;
+  font->space_w = slot->metrics.width >> 6;
 
   return font;
 }
 
-RnFont 
+RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_LINEAR);
+                         1024, 1024, 4, RN_TEX_FILTER_NEAREST);
 }
 
 void 
@@ -1050,8 +1077,7 @@ rn_free_font(RnState* state, RnFont* font) {
   // Delete the font's atlas texture
   glDeleteTextures(1, &font->atlas_id);
 
-  // Zero-out the font
-  memset(font, 0, sizeof(*font));
+  free(font);
 }
 
 void 
@@ -1059,6 +1085,17 @@ rn_clear_color(RnColor color) {
   vec4s zto = rn_color_to_zto(color);
   glClearColor(zto.r, zto.g, zto.b, zto.a);
   glClear(GL_COLOR_BUFFER_BIT);
+}
+
+void 
+rn_begin_scissor(vec2s pos, vec2s size, uint32_t render_height) {
+  int32_t y_lower_left = render_height - (pos.y + size.y);
+  glEnable(GL_SCISSOR_TEST);
+  glScissor(pos.x, y_lower_left, size.x, size.y);
+}
+void 
+rn_end_scissor(void) {
+  glDisable(GL_SCISSOR_TEST);
 }
 
 void 
@@ -1146,6 +1183,12 @@ rn_add_vertex_ex(
   vertex->texcoord[1] = texcoord.y;
 
   state->render.verts[state->render.vert_count].tex_index = tex_index;
+
+  vertex->min_coord[0] = state->cull_start.x;
+  vertex->min_coord[1] = state->cull_start.y;
+
+  vertex->max_coord[0] = state->cull_end.x;
+  vertex->max_coord[1] = state->cull_end.y;
 
   state->render.vert_count++;
 
@@ -1555,6 +1598,38 @@ RnHarfbuzzText rn_hb_text_from_str(
   return get_hb_text_from_cache(&state->hb_cache, font, str);
 }
 
+
+void rn_set_cull_end_x(RnState* state, float x) {
+  state->cull_end.x = x; 
+}
+
+void rn_set_cull_end_y(RnState* state, float y) {
+  state->cull_end.y = y; 
+}
+void rn_set_cull_start_x(RnState* state, float x) {
+  state->cull_start.x = x;
+}
+
+void rn_set_cull_start_y(RnState* state, float y) {
+  state->cull_start.y = y;
+}
+
+void rn_unset_cull_start_x(RnState* state) {
+  state->cull_start.x = -1;
+}
+
+void rn_unset_cull_start_y(RnState* state) {
+  state->cull_start.y = -1;
+}
+
+void rn_unset_cull_end_x(RnState* state) {
+  state->cull_end.x = -1;
+}
+
+void rn_unset_cull_end_y(RnState* state) {
+  state->cull_end.y = -1;
+}
+
 RnTextProps rn_text_render(
   RnState* state, 
   const char* text,
@@ -1564,6 +1639,24 @@ RnTextProps rn_text_render(
   return rn_text_render_ex(state, text, font, pos, color, 0.0f, true);
 }
 
+RnTextProps rn_text_render_base_types(
+    RnState* state, 
+    const char* text,
+    RnFont* font, 
+    float pos_x,
+    float pos_y,
+    unsigned char color_r, 
+    unsigned char color_g, 
+    unsigned char color_b, 
+    unsigned char color_a
+    ) {
+  return rn_text_render_ex(
+    state, text, font, 
+    (vec2s){pos_x, pos_y},
+    (RnColor){color_r, color_g, color_b, color_a},
+    0.0f, true);
+}
+
 RnTextProps rn_text_props(
   RnState* state, 
   const char* text, 
@@ -1571,6 +1664,22 @@ RnTextProps rn_text_props(
 ) {
   return rn_text_render_ex(state, text, font, (vec2s){0, 0},
                            RN_NO_COLOR, 0.0f, false);
+}
+
+float rn_text_width(
+    RnState* state, 
+    const char* text, 
+    RnFont* font
+    ) {
+  return rn_text_props(state, text, font).width;
+}
+
+float rn_text_height(
+    RnState* state, 
+    const char* text, 
+    RnFont* font
+    ) {
+  return rn_text_props(state, text, font).height;
 }
 
 RnColor rn_color_from_hex(uint32_t hex) {

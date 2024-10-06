@@ -248,6 +248,13 @@ typedef struct {
   // Specifies if the vertex is rendering a text (
   // 1.0 if text, 0.0 if not)
   float is_text;
+
+  // Specifies the starting position from where to cull the 
+  // shape that contains the vertex 
+  vec2 min_coord;
+  // Specifies the ending position from where to cull the 
+  // shape that contains the vertex 
+  vec2 max_coord;
 } RnVertex; // 76 Bytes per vertex
 
 /**
@@ -386,6 +393,11 @@ typedef struct {
   // The ID that is used for the next 
   // loaded font (incremented if a font was loaded)
   uint32_t font_id;
+
+  // The starting position of the active culling box (-1,-1 when no culling box) 
+  vec2s cull_start;
+  // The ending position of the active culling box (-1,-1 when no culling box) 
+  vec2s cull_end;
 } RnState;
 
 // --- Functions ---
@@ -519,7 +531,7 @@ void rn_load_texture_base_types(
  * @return The loaded font
  * 
  */
-RnFont rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
+RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
     uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w, RnTextureFiltering filter_mode);
 
 /**
@@ -533,7 +545,7 @@ RnFont rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
  *
  * @return The loaded font
 */
-RnFont rn_load_font(RnState* state, const char* filepath, uint32_t size);
+RnFont* rn_load_font(RnState* state, const char* filepath, uint32_t size);
 
 /*
  * @brief Sets the pixel size of a given font.
@@ -594,7 +606,30 @@ void rn_free_font(RnState* state, RnFont* font);
  * @param[in] color The color to clear the OpenGL 
  * screen with
  * */
+
 void rn_clear_color(RnColor color);
+
+/*
+ * @brief Begins an OpenGL scissor mode by 
+ * enabeling GL_SCISSOR_TEST and calling glScissor 
+ *
+ * NOTE: OpenGL uses the lower left corner as Y=0, 
+ * this function uses upper left, like all other functions 
+ * in runara.
+ *
+ * @param[in] pos The starting position of the 
+ * scissored box
+ * @param[in] size The size of the scissored box
+ * @param[in] render_height The height of the rendering area 
+ * */
+void rn_begin_scissor(vec2s pos, vec2s size, uint32_t render_height);
+
+/*
+ * @brief Wrapper around glDisable(GL_SCISSOR_TEST),
+ * effectively removing the scissored box created by 
+ * rn_begin_scissor.
+ * */
+void rn_end_scissor(void);
 
 /*
  * @brief Clears the OpenGL color buffer and 
@@ -1009,6 +1044,35 @@ RnTextProps rn_text_render(
     RnColor color);
 
 /*
+ * @brief Uses 'rn_text_render()' but using 
+ * base types instead of structs.
+ *
+ * @param[in] state The state of the library
+ * @param[in] text The text to rener 
+ * @param[in] font The font to render the text with
+ * @param[in] pos_x The X position of the text (px)
+ * @param[in] pos_y The Y position of the text (px)
+ * @param[in] color_r The red color-channel of the rendered text
+ * @param[in] color_g The green color-channel of the rendered text
+ * @param[in] color_b The blue color-channel of the rendered text
+ * @param[in] color_a The alpha color-channel of the rendered text
+ *
+ * @return The properties of the text (dimension)
+ * */
+
+RnTextProps rn_text_render_base_types(
+    RnState* state, 
+    const char* text,
+    RnFont* font, 
+    float pos_x,
+    float pos_y,
+    unsigned char color_r, 
+    unsigned char color_g, 
+    unsigned char color_b, 
+    unsigned char color_a
+    );
+
+/*
  * @brief Retrieves properties (dimensions) of a given text 
  * without rendering it.
  *
@@ -1025,6 +1089,38 @@ RnTextProps rn_text_render(
  * @return The properties of the text (dimension)
  * */
 RnTextProps rn_text_props(
+    RnState* state, 
+    const char* text, 
+    RnFont* font
+    );
+
+/*
+ * @brief Retrieves the width in pixels of a given text 
+ * without rendering it. (uses rn_text_props() and return .width)
+ *
+ * @param[in] state The state of the library
+ * @param[in] text The text to rener 
+ * @param[in] font The font to render the text with
+ *
+ * @return The width of the text in pixels 
+ * */
+float rn_text_width(
+    RnState* state, 
+    const char* text, 
+    RnFont* font
+    );
+
+/*
+ * @brief Retrieves the height in pixels of a given text 
+ * without rendering it. (uses rn_text_props() and return .height)
+ *
+ * @param[in] state The state of the library
+ * @param[in] text The text to rener 
+ * @param[in] font The font to render the text with
+ *
+ * @return The height of the text in pixels 
+ * */
+float rn_text_height(
     RnState* state, 
     const char* text, 
     RnFont* font
@@ -1087,6 +1183,66 @@ RnHarfbuzzText rn_hb_text_from_str(
     RnFont font, 
     const char* str
     );
+
+/*
+ * @brief Sets the X coordinate from which to start culling. *
+ *
+ * @param[in] state The state of the library
+ * @param[in] x The X coordinate from which to start culling 
+ * */
+void rn_set_cull_start_x(RnState* state, float x);
+
+/*
+ * @brief Sets the Y coordinate from which to start culling. *
+ *
+ * @param[in] state The state of the library
+ * @param[in] y The Y coordinate from which to start culling 
+ * */
+void rn_set_cull_start_y(RnState* state, float y);
+
+/*
+ * @brief Sets the X coordinate from which to stop culling. *
+ *
+ * @param[in] state The state of the library
+ * @param[in] x The X coordinate from which to stop culling.
+ * */
+void rn_set_cull_end_x(RnState* state, float x);
+
+/*
+ * @brief Sets the Y coordinate from which to stop culling. *
+ *
+ * @param[in] state The state of the library
+ * @param[in] y The Y coordinate from which to stop culling.
+ * */
+void rn_set_cull_end_y(RnState* state, float y);  
+
+/*
+ * @brief Unsets the X coordinate where culling would start 
+ *
+ * @param[in] state The state of the library
+ * */
+void rn_unset_cull_start_x(RnState* state);
+
+/*
+ * @brief Unsets the Y coordinate where culling would start 
+ *
+ * @param[in] state The state of the library
+ * */
+void rn_unset_cull_start_y(RnState* state);
+
+/*
+ * @brief Unsets the X coordinate where culling would stop 
+ *
+ * @param[in] state The state of the library
+ * */
+void rn_unset_cull_end_x(RnState* state);
+
+/*
+ * @brief Unsets the Y coordinate where culling would stop 
+ *
+ * @param[in] state The state of the library
+ * */
+void rn_unset_cull_end_y(RnState* state);
 
 /*
  * @brief Creates and returns an RGBA color from a 
