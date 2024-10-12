@@ -255,7 +255,7 @@ typedef struct {
   // Specifies the ending position from where to cull the 
   // shape that contains the vertex 
   vec2 max_coord;
-} RnVertex; // 76 Bytes per vertex
+} RnVertex; // 92 Bytes per vertex
 
 /**
  * @struct RnRenderState 
