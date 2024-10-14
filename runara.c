@@ -137,8 +137,8 @@ set_projection_matrix(RnState* state) {
   // The dimensions of the matrix
   float left = 0.0f;
   float top = 0.0f;
-  float right = state->render_w;
-  float bottom = state->render_h;
+  float right = (float)state->render_w;
+  float bottom = (float)state->render_h;
 
   // Create the orthographic projection matrix
   mat4 orthoMatrix = GLM_MAT4_IDENTITY_INIT;
@@ -556,13 +556,13 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   int32_t width, height;
 
   int bpp = 4; 
-  int padding = 1; 
+  int padding = 2; 
 
   int old_width = slot->bitmap.width;
   int old_height = slot->bitmap.rows;
 
   width = old_width + 2 * padding;
-  height = old_height + 2 * padding;
+  height = old_height + 2 * padding + 1;
 
   // Allocate memory for RGBA data with padding
   unsigned char* rgba_data = (unsigned char*)malloc(width * height * bpp);
@@ -859,9 +859,6 @@ rn_terminate(RnState* state) {
 
 void
 rn_resize_display(RnState* state, uint32_t render_w, uint32_t render_h) {
-  if(state->render_w == render_w && 
-    state->render_h == render_h) return;
-
   // Set render dimensions
   state->render_w = render_w;
   state->render_h = render_h;
@@ -993,6 +990,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
   font->atlas_row_h = 0;
   font->atlas_x = 0;
   font->atlas_y = 0;
+  font->filepath = strdup(filepath);
 
   font->tab_w = tab_w;
 
@@ -1016,7 +1014,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_NEAREST);
+                         1024, 1024, 4, RN_TEX_FILTER_LINEAR);
 }
 
 void 
@@ -1161,6 +1159,11 @@ rn_add_vertex_ex(
   float tex_index,
   bool is_text) {
 
+  // Round to nearest integer
+  int rounded_x = (int)(pos.x);  
+  int rounded_y = (int)(pos.y);
+  int rounded_w = (int)(size.x);  
+  int rounded_h = (int)(size.y);
   // If the vetex does not fit into the current batch, 
   // advance to the next batch
   if(state->render.vert_count >= RN_MAX_RENDER_BATCH) {
@@ -1175,11 +1178,11 @@ rn_add_vertex_ex(
   state->render.verts[state->render.vert_count].pos[0] = result[0];
   state->render.verts[state->render.vert_count].pos[1] = result[1];
 
-  vertex->pos_px[0] = pos.x;
-  vertex->pos_px[1] = pos.y;
+  vertex->pos_px[0] = rounded_x; 
+  vertex->pos_px[1] = rounded_y;
 
-  vertex->size_px[0] = size.x;
-  vertex->size_px[1] = size.y;
+  vertex->size_px[0] = rounded_w; 
+  vertex->size_px[1] = rounded_h;
 
   vec4s color_zto = rn_color_to_zto(color); 
 

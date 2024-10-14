@@ -134,6 +134,8 @@ typedef struct {
   // The OpenGL filtering mode of the texture 
   // atlas of the font
   RnTextureFiltering filter_mode;
+  // The path of the font's file 
+  char* filepath;
 } RnFont;
 
 /**
