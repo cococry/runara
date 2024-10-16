@@ -561,8 +561,8 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   int old_width = slot->bitmap.width;
   int old_height = slot->bitmap.rows;
 
-  width = old_width + 2 * padding;
-  height = old_height + 2 * padding + 1;
+  width = (int)(old_width + 2 * padding);
+  height = (int)(old_height + 2 * padding);
 
   // Allocate memory for RGBA data with padding
   unsigned char* rgba_data = (unsigned char*)malloc(width * height * bpp);
@@ -599,7 +599,7 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   // Resize the atlas if it overflows on the Y
   if (font->atlas_y + height > font->atlas_h) {
     int new_w = font->atlas_w * 2;
-    int new_h = font->atlas_h * 2;
+    int new_h = font->atlas_h * 2 + 1;
 
     uint32_t new_id;
     // Create new texture
@@ -670,10 +670,10 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   glyph.font_id = font->id;
 
   // Adjust texture coordinates to account for padding
-  glyph.u0 = (font->atlas_x + padding) / (float)font->atlas_w;
-  glyph.v0 = (font->atlas_y + padding) / (float)font->atlas_h;
-  glyph.u1 = (font->atlas_x + width - padding) / (float)font->atlas_w;
-  glyph.v1 = (font->atlas_y + height - padding) / (float)font->atlas_h;
+  glyph.u0 = (int)(font->atlas_x + padding) / (float)font->atlas_w;
+  glyph.v0 = (int)(font->atlas_y + padding) / (float)font->atlas_h;
+  glyph.u1 = (int)(font->atlas_x + width - padding) / (float)font->atlas_w;
+  glyph.v1 = (int)(font->atlas_y + height - padding) / (float)font->atlas_h;
 
   font->atlas_x += width;
   font->atlas_row_h = (font->atlas_row_h > height) ? font->atlas_row_h : height;
