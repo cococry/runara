@@ -343,7 +343,7 @@ renderer_init(RnState* state) {
     "     }\n"
     " if(v_is_text == 1.0) {\n"
     "   vec4 sampled = vec4(1.0, 1.0, 1.0, texture(u_textures[int(v_tex_index)], v_texcoord).r);\n"
-    "   o_color = vec4(v_color.rgb, 1.0) * sampled;\n"
+    "   o_color = v_color * sampled;\n"
     "} else {\n"
     "   vec4 display_color;"
     "   if(v_tex_index == -1) {\n"
