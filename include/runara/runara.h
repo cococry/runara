@@ -1025,6 +1025,25 @@ RnTextProps rn_text_render_ex(
     float line_height,
     bool render);
 
+typedef enum {
+  RN_PARAGRAPH_ALIGNMENT_LEFT = 0,
+  RN_PARAGRAPH_ALIGNMENT_CENTER,
+  RN_PARAGRAPH_ALIGNMENT_RIGHT,
+} RnParagraphAlignment;
+
+typedef struct {
+  RnParagraphAlignment align;
+  float wrap;
+} RnParagraphProps;
+
+RnTextProps rn_text_render_paragraph(
+    RnState* state, 
+    const char* paragraph,
+    RnFont* font, 
+    vec2s pos, 
+    RnColor color,
+    RnParagraphProps props);
+
 /*
  * @brief Uses 'rn_text_render_ex()' with 
  * line_height set to 0 (=> font's line height is 
@@ -1094,6 +1113,13 @@ RnTextProps rn_text_props(
     RnState* state, 
     const char* text, 
     RnFont* font
+    );
+
+RnTextProps rn_text_props_paragraph(
+    RnState* state, 
+    const char* text, 
+    RnFont* font,
+    RnParagraphProps props
     );
 
 /*

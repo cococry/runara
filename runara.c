@@ -556,13 +556,13 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   int32_t width, height;
 
   int bpp = 4; 
-  int padding = 2; 
+  int padding = 1; 
 
   int old_width = slot->bitmap.width;
   int old_height = slot->bitmap.rows;
 
-  width = (int)(old_width + 2 * padding);
-  height = (int)(old_height + 2 * padding);
+  width = old_width + padding * 3.0f;
+  height = old_height + padding * 3.0f; 
 
   // Allocate memory for RGBA data with padding
   unsigned char* rgba_data = (unsigned char*)malloc(width * height * bpp);
@@ -1190,7 +1190,6 @@ rn_add_vertex_ex(
   vertex->color[1] = color_zto.g;
   vertex->color[2] = color_zto.b;
   vertex->color[3] = color_zto.a;
-
   vec4s border_color_zto = rn_color_to_zto(border_color); 
 
   vertex->border_color[0] = border_color_zto.r;
@@ -1579,6 +1578,118 @@ RnTextProps rn_text_render_ex(RnState* state,
   };
 }
 
+RnTextProps 
+rn_text_render_paragraph(
+    RnState* state, 
+    const char* paragraph,
+    RnFont* font, 
+    vec2s pos, 
+    RnColor color,
+    RnParagraphProps props) {
+  // Get the harfbuzz text information for the string
+  RnHarfbuzzText hb_text = rn_hb_text_from_str(state, *font, paragraph);
+
+  // Retrieve highest bearing if 
+  // it was not retrived yet.
+  if(!hb_text.highest_bearing) {
+    for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
+      // Get the glyph from the glyph index 
+      RnGlyph glyph =  rn_glyph_from_codepoint(
+        state, font,
+        hb_text.glyph_info[i].codepoint);
+      // Check if the glyph's bearing is higher 
+      // than the current highest bearing
+      if(glyph.bearing_y > hb_text.highest_bearing) {
+        hb_text.highest_bearing = glyph.bearing_y;
+      }
+    }
+  }
+
+  vec2s start_pos = pos;
+
+  // New line characters
+  const int32_t line_feed       = 0x000A;
+  const int32_t carriage_return = 0x000D;
+  const int32_t line_seperator  = 0x2028;
+  const int32_t paragraph_seperator = 0x2029;
+
+  float textheight = 0;
+
+  for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
+    // Get the glyph from the glyph index
+    RnGlyph glyph =  rn_glyph_from_codepoint(
+      state, font,
+      hb_text.glyph_info[i].codepoint); 
+
+    // Calculate position
+    float x_advance = hb_text.glyph_pos[i].x_advance / 64.0f; 
+    float y_advance = hb_text.glyph_pos[i].y_advance / 64.0f;
+    float x_offset = hb_text.glyph_pos[i].x_offset / 64.0f;
+    float y_offset = hb_text.glyph_pos[i].y_offset / 64.0f;
+
+    // Get the unicode codepoint of the currently iterated glyph
+    char codepoint = paragraph[hb_text.glyph_info[i].cluster];
+    // Check if the unicode codepoint is a new line and advance 
+    // to the next line if so
+    bool text_wraps = pos.x + x_offset + x_advance >= props.wrap;
+    if(codepoint == line_feed || codepoint == carriage_return ||
+      codepoint == line_seperator || codepoint == paragraph_seperator || text_wraps) {
+      float font_height = font->face->size->metrics.height / 64.0f;
+      pos.y += font_height;
+      textheight += font_height;
+      if(!text_wraps) {
+        pos.x = start_pos.x;
+        continue;
+      } else {
+        switch(props.align) {
+          case RN_PARAGRAPH_ALIGNMENT_LEFT: {
+            pos.x = start_pos.x;
+            break;
+          }
+          default: {
+            break;
+          }
+        }
+      }
+    }
+
+    // Advance the x position by the tab width if 
+    // we iterate a tab character
+    if(codepoint == '\t') {
+      pos.x += font->tab_w * font->space_w;
+      continue;
+    }
+
+    // If the glyph is not within the font, dont render it
+    if(!hb_text.glyph_info[i].codepoint) {
+      continue;
+    }
+
+
+    vec2s glyph_pos = {
+      pos.x + x_offset,
+      pos.y + hb_text.highest_bearing - y_offset 
+    };
+
+    // Render the glyph
+    rn_glyph_render(state, glyph, *font, glyph_pos, color);
+
+    if(glyph.height > textheight) {
+      textheight = glyph.height;
+    }
+
+    // Advance to the next glyph
+    pos.x += x_advance;
+    pos.y += y_advance;
+  }
+
+  return (RnTextProps){
+    .width = pos.x - start_pos.x, 
+    .height = textheight
+  };
+
+}
+
 void rn_glyph_render(
   RnState* state,
   RnGlyph glyph,
@@ -1689,6 +1800,17 @@ RnTextProps rn_text_props(
 ) {
   return rn_text_render_ex(state, text, font, (vec2s){0, 0},
                            RN_NO_COLOR, 0.0f, false);
+}
+
+RnTextProps 
+rn_text_props_paragraph(
+    RnState* state, 
+    const char* text, 
+    RnFont* font,
+    RnParagraphProps props
+    ) {
+  return rn_text_render_paragraph(state, text, font, (vec2s){0, 0},
+                           RN_NO_COLOR, props);
 }
 
 float rn_text_width(
