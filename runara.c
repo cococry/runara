@@ -1578,6 +1578,60 @@ RnTextProps rn_text_render_ex(RnState* state,
   };
 }
 
+char** splitbyspaces(const char* input, uint32_t* word_count) {
+  char** words = NULL;    
+  *word_count = 0;        
+  size_t capacity = 2;   
+
+  words = (char**)malloc(capacity * sizeof(char*));
+  if (!words) {
+    fprintf(stderr, "Memory allocation failed\n");
+    exit(EXIT_FAILURE);
+  }
+
+  char* input_copy = strdup(input);
+  if (!input_copy) {
+    fprintf(stderr, "Memory allocation failed\n");
+    free(words);
+    exit(EXIT_FAILURE);
+  }
+
+  char* token = strtok(input_copy, " ");
+  while (token != NULL) {
+    if (*word_count >= capacity) {
+      capacity *= 2;
+      char** temp = realloc(words, capacity * sizeof(char*));
+      if (!temp) {
+        free(input_copy);
+        for (int i = 0; i < *word_count; i++) {
+          free(words[i]);
+        }
+        free(words);
+        exit(EXIT_FAILURE);
+      }
+      words = temp;
+    }
+
+    words[*word_count] = strdup(token);
+    if (!words[*word_count]) {
+      free(input_copy);
+      for (int i = 0; i < *word_count; i++) {
+        free(words[i]);
+      }
+      free(words);
+      exit(EXIT_FAILURE);
+    }
+
+    (*word_count)++;
+    token = strtok(NULL, " ");
+  }
+
+  free(input_copy);
+
+  return words;
+}
+ 
+
 RnTextProps 
 rn_text_render_paragraph(
     RnState* state, 
@@ -1615,6 +1669,30 @@ rn_text_render_paragraph(
 
   float textheight = 0;
 
+  uint32_t nwords;
+  char** words = splitbyspaces(paragraph, &nwords);
+  
+  float space_width = rn_text_props(state, " ", font).width;
+
+  float word_ys[nwords];
+  float x = pos.x;
+  float y = pos.y;
+  for(uint32_t i = 0; i < nwords; i++) {
+    float word_width = rn_text_props(state, words[i], font).width + space_width; 
+    x += word_width;
+    printf("X of '%s': %f\n", words[i], x);
+    if(x > props.wrap) {
+      printf("Wrapped word '%s'.\n", words[i]);
+      float font_height = font->face->size->metrics.height / 64.0f;
+      y += font_height;
+      x = pos.x + word_width;
+    }
+    word_ys[i] =  y;
+  }
+
+  uint32_t word_idx = 0;
+
+  float last_word_y = -1;
   for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
@@ -1628,29 +1706,31 @@ rn_text_render_paragraph(
     float y_offset = hb_text.glyph_pos[i].y_offset / 64.0f;
 
     // Get the unicode codepoint of the currently iterated glyph
-    char codepoint = paragraph[hb_text.glyph_info[i].cluster];
+    uint32_t codepoint_idx = hb_text.glyph_info[i].cluster;
+    char codepoint = paragraph[codepoint_idx];
+
+    if(codepoint_idx != strlen(paragraph) - 1 && 
+      codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ' &&
+      word_idx +  1 < nwords) {
+      word_idx++;
+    }
+
+    if(last_word_y != word_ys[word_idx] && last_word_y != -1) {
+      printf("Wrapped at word: %s\n", words[word_idx]);
+      pos.x = start_pos.x - space_width; 
+    }
+    pos.y = word_ys[word_idx];
+    last_word_y = pos.y;
+
     // Check if the unicode codepoint is a new line and advance 
     // to the next line if so
-    bool text_wraps = pos.x + x_offset + x_advance >= props.wrap;
     if(codepoint == line_feed || codepoint == carriage_return ||
-      codepoint == line_seperator || codepoint == paragraph_seperator || text_wraps) {
+      codepoint == line_seperator || codepoint == paragraph_seperator) {
       float font_height = font->face->size->metrics.height / 64.0f;
       pos.y += font_height;
       textheight += font_height;
-      if(!text_wraps) {
-        pos.x = start_pos.x;
-        continue;
-      } else {
-        switch(props.align) {
-          case RN_PARAGRAPH_ALIGNMENT_LEFT: {
-            pos.x = start_pos.x;
-            break;
-          }
-          default: {
-            break;
-          }
-        }
-      }
+      pos.x = start_pos.x;
+      continue;
     }
 
     // Advance the x position by the tab width if 
