@@ -1667,8 +1667,6 @@ rn_text_render_paragraph(
   const int32_t line_seperator  = 0x2028;
   const int32_t paragraph_seperator = 0x2029;
 
-  float textheight = 0;
-
   uint32_t nwords;
   char** words = splitbyspaces(paragraph, &nwords);
   
@@ -1680,9 +1678,7 @@ rn_text_render_paragraph(
   for(uint32_t i = 0; i < nwords; i++) {
     float word_width = rn_text_props(state, words[i], font).width + space_width; 
     x += word_width;
-    printf("X of '%s': %f\n", words[i], x);
-    if(x > props.wrap) {
-      printf("Wrapped word '%s'.\n", words[i]);
+    if(x > props.wrap + space_width) {
       float font_height = font->face->size->metrics.height / 64.0f;
       y += font_height;
       x = pos.x + word_width;
@@ -1693,6 +1689,12 @@ rn_text_render_paragraph(
   uint32_t word_idx = 0;
 
   float last_word_y = -1;
+
+  bool last_char_wrapped = false;
+
+  float text_width = 0.0f;
+  float line_width = 0.0f;
+  float text_height = 0;
   for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
@@ -1715,23 +1717,32 @@ rn_text_render_paragraph(
       word_idx++;
     }
 
-    if(last_word_y != word_ys[word_idx] && last_word_y != -1) {
-      printf("Wrapped at word: %s\n", words[word_idx]);
-      pos.x = start_pos.x - space_width; 
+    if(last_word_y != word_ys[word_idx] && last_word_y != -1 && !last_char_wrapped) {
+      pos.x = start_pos.x - space_width;
+      float font_height = font->face->size->metrics.height / 64.0f;
+      text_height += font_height;
+      line_width = 0.0f;
     }
     pos.y = word_ys[word_idx];
     last_word_y = pos.y;
 
     // Check if the unicode codepoint is a new line and advance 
     // to the next line if so
+    bool char_wraps = pos.x > props.wrap;
     if(codepoint == line_feed || codepoint == carriage_return ||
-      codepoint == line_seperator || codepoint == paragraph_seperator) {
+      codepoint == line_seperator || codepoint == paragraph_seperator || char_wraps) {
       float font_height = font->face->size->metrics.height / 64.0f;
       pos.y += font_height;
-      textheight += font_height;
-      pos.x = start_pos.x;
+      text_height += font_height;
+      pos.x = start_pos.x; 
+      for(uint32_t i = word_idx; i < nwords; i++) {
+        word_ys[i] += font_height;
+      }
+      last_char_wrapped = true;
+      line_width = 0.0f;
       continue;
     }
+    last_char_wrapped = false;
 
     // Advance the x position by the tab width if 
     // we iterate a tab character
@@ -1754,18 +1765,23 @@ rn_text_render_paragraph(
     // Render the glyph
     rn_glyph_render(state, glyph, *font, glyph_pos, color);
 
-    if(glyph.height > textheight) {
-      textheight = glyph.height;
+    if(glyph.height > text_height) {
+      text_height = glyph.height;
     }
+    
+    line_width += x_advance;
 
+    if (line_width > text_width) {
+      text_width = line_width - space_width;
+    }
     // Advance to the next glyph
     pos.x += x_advance;
     pos.y += y_advance;
   }
 
   return (RnTextProps){
-    .width = pos.x - start_pos.x, 
-    .height = textheight
+    .width = text_width, 
+    .height = text_height
   };
 
 }
