@@ -665,6 +665,9 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   glyph.bearing_x = font->face->glyph->bitmap_left;
   glyph.bearing_y = font->face->glyph->bitmap_top;
   glyph.advance = font->face->glyph->advance.x;
+  glyph.ascender = font->face->glyph->metrics.horiBearingY >> 6;
+  glyph.descender = (font->face->glyph->metrics.height >> 6) - glyph.ascender;
+
 
   glyph.codepoint = codepoint;
   glyph.font_id = font->id;
@@ -1578,59 +1581,66 @@ RnTextProps rn_text_render_ex(RnState* state,
   };
 }
 
-char** splitbyspaces(const char* input, uint32_t* word_count) {
-  char** words = NULL;    
-  *word_count = 0;        
-  size_t capacity = 2;   
 
-  words = (char**)malloc(capacity * sizeof(char*));
+// Define the Word structure
+typedef struct {
+  char* str;       // The word string
+  bool has_newline; // Whether the word was split because of a newline
+} Word;
+
+Word* splitwords(const char* input, uint32_t* word_count) {
+  Word* words = NULL;
+  *word_count = 0;
+  size_t capacity = 2; // Initial capacity for the words array
+
+  words = (Word*)malloc(capacity * sizeof(Word));
   if (!words) {
     fprintf(stderr, "Memory allocation failed\n");
     exit(EXIT_FAILURE);
   }
 
-  char* input_copy = strdup(input);
-  if (!input_copy) {
-    fprintf(stderr, "Memory allocation failed\n");
-    free(words);
-    exit(EXIT_FAILURE);
-  }
-
-  char* token = strtok(input_copy, " ");
-  while (token != NULL) {
-    if (*word_count >= capacity) {
-      capacity *= 2;
-      char** temp = realloc(words, capacity * sizeof(char*));
-      if (!temp) {
-        free(input_copy);
-        for (int i = 0; i < *word_count; i++) {
-          free(words[i]);
+  size_t input_len = strlen(input);
+  size_t start = 0; // Start index of the current word
+  for (size_t i = 0; i <= input_len; i++) {
+    // Check for delimiters or end of the string
+    if (input[i] == ' ' || input[i] == '\t' || input[i] == '\n' || input[i] == '\0') {
+      if (i > start) { // If there's a word between start and i
+        if (*word_count >= capacity) {
+          capacity *= 2;
+          Word* temp = realloc(words, capacity * sizeof(Word));
+          if (!temp) {
+            for (uint32_t j = 0; j < *word_count; j++) {
+              free(words[j].str);
+            }
+            free(words);
+            fprintf(stderr, "Memory allocation failed\n");
+            exit(EXIT_FAILURE);
+          }
+          words = temp;
         }
-        free(words);
-        exit(EXIT_FAILURE);
-      }
-      words = temp;
-    }
 
-    words[*word_count] = strdup(token);
-    if (!words[*word_count]) {
-      free(input_copy);
-      for (int i = 0; i < *word_count; i++) {
-        free(words[i]);
-      }
-      free(words);
-      exit(EXIT_FAILURE);
-    }
+        size_t word_length = i - start;
+        words[*word_count].str = (char*)malloc(word_length + 1);
+        if (!words[*word_count].str) {
+          for (uint32_t j = 0; j < *word_count; j++) {
+            free(words[j].str);
+          }
+          free(words);
+          fprintf(stderr, "Memory allocation failed\n");
+          exit(EXIT_FAILURE);
+        }
 
-    (*word_count)++;
-    token = strtok(NULL, " ");
+        strncpy(words[*word_count].str, input + start, word_length);
+        words[*word_count].str[word_length] = '\0';
+        words[*word_count].has_newline = (input[i] == '\n');
+        (*word_count)++;
+      }
+      start = i + 1; // Update start to the next character after the delimiter
+    }
   }
-
-  free(input_copy);
 
   return words;
 }
- 
 
 RnTextProps 
 rn_text_render_paragraph(
@@ -1668,34 +1678,52 @@ rn_text_render_paragraph(
   const int32_t paragraph_seperator = 0x2029;
 
   uint32_t nwords;
-  char** words = splitbyspaces(paragraph, &nwords);
+  Word* words = splitwords(paragraph, &nwords);
   
   float space_width = rn_text_props(state, " ", font).width;
 
   float word_ys[nwords];
   float x = pos.x;
   float y = pos.y;
-  for(uint32_t i = 0; i < nwords; i++) {
-    float word_width = rn_text_props(state, words[i], font).width + space_width; 
-    x += word_width;
-    if(x > props.wrap + space_width) {
-      float font_height = font->face->size->metrics.height / 64.0f;
-      y += font_height;
-      x = pos.x + word_width;
+
+  uint32_t nwraps = 0;
+  float font_height;
+  {
+    FT_Pos ascender = font->face->size->metrics.ascender;
+    FT_Pos descender = font->face->size->metrics.descender;
+    FT_Pos height = font->face->size->metrics.height;
+    font_height = height / 64.0; 
+  }
+
+  {
+    bool last_word_had_new_line = false;
+    for(uint32_t i = 0; i < nwords; i++) {
+      float word_width = rn_text_props(state, words[i].str, font).width + space_width;
+      if(i == nwords - 1)
+        word_width -= space_width;
+      x += word_width;
+      if((x > props.wrap || last_word_had_new_line) && i != nwords - 1) {
+        y += font_height;
+        x = pos.x + word_width;
+        nwraps++;
+      }
+      last_word_had_new_line = words[i].has_newline;
+      word_ys[i] = y;
     }
-    word_ys[i] =  y;
   }
 
   uint32_t word_idx = 0;
-
   float last_word_y = -1;
-
-  bool last_char_wrapped = false;
 
   float text_width = 0.0f;
   float line_width = 0.0f;
   float text_height = 0;
-  for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
+
+  int max_ascender = 0; 
+  int max_descender = 0; 
+
+  bool word_wrapped = false;
+  for (uint32_t i = 0; i < hb_text.glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
       state, font,
@@ -1712,37 +1740,37 @@ rn_text_render_paragraph(
     char codepoint = paragraph[codepoint_idx];
 
     if(codepoint_idx != strlen(paragraph) - 1 && 
-      codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ' &&
+      (
+      codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ' ||
+      codepoint == '\t' && paragraph[codepoint_idx + 1] != '\t' ||
+      codepoint == '\n' && paragraph[codepoint_idx + 1] != '\n'
+    ) &&
       word_idx +  1 < nwords) {
       word_idx++;
+      word_wrapped = false;
     }
 
-    if(last_word_y != word_ys[word_idx] && last_word_y != -1 && !last_char_wrapped) {
-      pos.x = start_pos.x - space_width;
-      float font_height = font->face->size->metrics.height / 64.0f;
-      text_height += font_height;
+    if(last_word_y != word_ys[word_idx] && last_word_y != -1 && !word_wrapped) {
+      pos.x = start_pos.x - ((codepoint == ' ') ?  space_width : 0.0f);
       line_width = 0.0f;
     }
-    pos.y = word_ys[word_idx];
     last_word_y = pos.y;
 
-    // Check if the unicode codepoint is a new line and advance 
-    // to the next line if so
-    bool char_wraps = pos.x > props.wrap;
-    if(codepoint == line_feed || codepoint == carriage_return ||
-      codepoint == line_seperator || codepoint == paragraph_seperator || char_wraps) {
-      float font_height = font->face->size->metrics.height / 64.0f;
+    if(!word_wrapped)
+      pos.y = word_ys[word_idx];
+
+    bool char_wraps = pos.x + glyph.width > props.wrap;
+    if(char_wraps) {
       pos.y += font_height;
-      text_height += font_height;
       pos.x = start_pos.x; 
+      line_width = 0.0f;
+      nwraps++;
+      text_height += font_height;
+      word_wrapped = true;
       for(uint32_t i = word_idx; i < nwords; i++) {
         word_ys[i] += font_height;
       }
-      last_char_wrapped = true;
-      line_width = 0.0f;
-      continue;
     }
-    last_char_wrapped = false;
 
     // Advance the x position by the tab width if 
     // we iterate a tab character
@@ -1756,7 +1784,6 @@ rn_text_render_paragraph(
       continue;
     }
 
-
     vec2s glyph_pos = {
       pos.x + x_offset,
       pos.y + hb_text.highest_bearing - y_offset 
@@ -1764,19 +1791,28 @@ rn_text_render_paragraph(
 
     // Render the glyph
     rn_glyph_render(state, glyph, *font, glyph_pos, color);
-
-    if(glyph.height > text_height) {
-      text_height = glyph.height;
-    }
-    
-    line_width += x_advance;
-
-    if (line_width > text_width) {
-      text_width = line_width - space_width;
-    }
     // Advance to the next glyph
     pos.x += x_advance;
     pos.y += y_advance;
+   
+    line_width += x_advance;
+    if (line_width > text_width) {
+      text_width = line_width;
+    }
+    
+    if (glyph.ascender > max_ascender) {
+      max_ascender = glyph.ascender;
+    }
+    if (glyph.descender > max_descender) {
+      max_descender = glyph.descender;
+    }
+  }
+
+  if(nwraps > 0) {
+    text_height = ((nwraps + 1) * font_height) - max_descender;
+  } else {
+    text_height = max_ascender + max_descender;
+    //text_width -= space_width;
   }
 
   return (RnTextProps){

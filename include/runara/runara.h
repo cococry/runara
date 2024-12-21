@@ -180,7 +180,11 @@ typedef struct {
   // The Y coordinate of the top right corner of 
   // the glyphs texture on the texture atlas of it's 
   // font.
-  float v1; 
+  float v1;
+
+  int32_t ascender;
+
+  int32_t descender;
 } RnGlyph;
 
 /**
