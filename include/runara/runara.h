@@ -1048,6 +1048,15 @@ RnTextProps rn_text_render_paragraph(
     RnColor color,
     RnParagraphProps props);
 
+RnTextProps rn_text_render_paragraph_ex(
+    RnState* state, 
+    const char* paragraph,
+    RnFont* font, 
+    vec2s pos, 
+    RnColor color,
+    RnParagraphProps props,
+    bool render);
+
 /*
  * @brief Uses 'rn_text_render_ex()' with 
  * line_height set to 0 (=> font's line height is 
@@ -1122,6 +1131,7 @@ RnTextProps rn_text_props(
 RnTextProps rn_text_props_paragraph(
     RnState* state, 
     const char* text, 
+    vec2s pos,
     RnFont* font,
     RnParagraphProps props
     );

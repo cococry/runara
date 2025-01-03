@@ -15,6 +15,13 @@
 #include <string.h>
 #include <time.h>
 
+
+
+typedef struct {
+  char* str;       
+  bool has_newline; 
+} Word;
+
 #ifdef _WIN32
 #define HOMEDIR "USERPROFILE"
 #else
@@ -1581,13 +1588,6 @@ RnTextProps rn_text_render_ex(RnState* state,
   };
 }
 
-
-// Define the Word structure
-typedef struct {
-  char* str;       // The word string
-  bool has_newline; // Whether the word was split because of a newline
-} Word;
-
 Word* splitwords(const char* input, uint32_t* word_count) {
   Word* words = NULL;
   *word_count = 0;
@@ -1595,7 +1595,7 @@ Word* splitwords(const char* input, uint32_t* word_count) {
 
   words = (Word*)malloc(capacity * sizeof(Word));
   if (!words) {
-    fprintf(stderr, "Memory allocation failed\n");
+    fprintf(stderr, "runara: memory allocation failed\n");
     exit(EXIT_FAILURE);
   }
 
@@ -1613,7 +1613,7 @@ Word* splitwords(const char* input, uint32_t* word_count) {
               free(words[j].str);
             }
             free(words);
-            fprintf(stderr, "Memory allocation failed\n");
+            fprintf(stderr, "runara: memory allocation failed\n");
             exit(EXIT_FAILURE);
           }
           words = temp;
@@ -1626,7 +1626,7 @@ Word* splitwords(const char* input, uint32_t* word_count) {
             free(words[j].str);
           }
           free(words);
-          fprintf(stderr, "Memory allocation failed\n");
+          fprintf(stderr, "runara: nemory allocation failed\n");
           exit(EXIT_FAILURE);
         }
 
@@ -1642,14 +1642,32 @@ Word* splitwords(const char* input, uint32_t* word_count) {
   return words;
 }
 
-RnTextProps 
-rn_text_render_paragraph(
+RnTextProps rn_text_render_paragraph(
     RnState* state, 
     const char* paragraph,
     RnFont* font, 
     vec2s pos, 
     RnColor color,
     RnParagraphProps props) {
+  return rn_text_render_paragraph_ex(
+    state, 
+    paragraph, 
+    font,
+    pos, 
+    color, 
+    props, 
+    true); // Render set to true
+}
+
+RnTextProps 
+rn_text_render_paragraph_ex(
+    RnState* state, 
+    const char* paragraph,
+    RnFont* font, 
+    vec2s pos, 
+    RnColor color,
+    RnParagraphProps props,
+    bool render) {
   // Get the harfbuzz text information for the string
   RnHarfbuzzText hb_text = rn_hb_text_from_str(state, *font, paragraph);
 
@@ -1702,7 +1720,7 @@ rn_text_render_paragraph(
       if(i == nwords - 1)
         word_width -= space_width;
       x += word_width;
-      if((x > props.wrap || last_word_had_new_line) && i != nwords - 1) {
+      if((x > props.wrap || last_word_had_new_line)) {
         y += font_height;
         x = pos.x + word_width;
         nwraps++;
@@ -1790,7 +1808,10 @@ rn_text_render_paragraph(
     };
 
     // Render the glyph
-    rn_glyph_render(state, glyph, *font, glyph_pos, color);
+    if(render) {
+      rn_glyph_render(state, glyph, *font, glyph_pos, color);
+    }
+
     // Advance to the next glyph
     pos.x += x_advance;
     pos.y += y_advance;
@@ -1812,7 +1833,6 @@ rn_text_render_paragraph(
     text_height = ((nwraps + 1) * font_height) - max_descender;
   } else {
     text_height = max_ascender + max_descender;
-    //text_width -= space_width;
   }
 
   return (RnTextProps){
@@ -1938,11 +1958,12 @@ RnTextProps
 rn_text_props_paragraph(
     RnState* state, 
     const char* text, 
+    vec2s pos,
     RnFont* font,
     RnParagraphProps props
     ) {
-  return rn_text_render_paragraph(state, text, font, (vec2s){0, 0},
-                           RN_NO_COLOR, props);
+  return rn_text_render_paragraph_ex(state, text, font, pos, 
+                           RN_NO_COLOR, props, false);
 }
 
 float rn_text_width(
