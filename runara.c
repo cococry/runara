@@ -563,13 +563,13 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   int32_t width, height;
 
   int bpp = 4; 
-  int padding = 1; 
+  int padding = 0; 
 
   int old_width = slot->bitmap.width;
   int old_height = slot->bitmap.rows;
 
-  width = old_width + padding * 3.0f;
-  height = old_height + padding * 3.0f; 
+  width = old_width + padding * 2.0f;
+  height = old_height + padding * 2.0f; 
 
   // Allocate memory for RGBA data with padding
   unsigned char* rgba_data = (unsigned char*)malloc(width * height * bpp);
@@ -682,10 +682,10 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   // Adjust texture coordinates to account for padding
   glyph.u0 = (int)(font->atlas_x + padding) / (float)font->atlas_w;
   glyph.v0 = (int)(font->atlas_y + padding) / (float)font->atlas_h;
-  glyph.u1 = (int)(font->atlas_x + width - padding) / (float)font->atlas_w;
-  glyph.v1 = (int)(font->atlas_y + height - padding) / (float)font->atlas_h;
+  glyph.u1 = (int)(font->atlas_x + width) / (float)font->atlas_w;
+  glyph.v1 = (int)(font->atlas_y + height + 1) / (float)font->atlas_h;
 
-  font->atlas_x += width;
+  font->atlas_x += width + 1;
   font->atlas_row_h = (font->atlas_row_h > height) ? font->atlas_row_h : height;
 
   // Free allocated memory
@@ -1720,7 +1720,7 @@ rn_text_render_paragraph_ex(
       if(i == nwords - 1)
         word_width -= space_width;
       x += word_width;
-      if((x > props.wrap || last_word_had_new_line)) {
+      if(((x > props.wrap && props.wrap != -1.0f)|| last_word_had_new_line)) {
         y += font_height;
         x = pos.x + word_width;
         nwraps++;
@@ -1777,16 +1777,18 @@ rn_text_render_paragraph_ex(
     if(!word_wrapped)
       pos.y = word_ys[word_idx];
 
-    bool char_wraps = pos.x + glyph.width > props.wrap;
-    if(char_wraps) {
-      pos.y += font_height;
-      pos.x = start_pos.x; 
-      line_width = 0.0f;
-      nwraps++;
-      text_height += font_height;
-      word_wrapped = true;
-      for(uint32_t i = word_idx; i < nwords; i++) {
-        word_ys[i] += font_height;
+    if(props.wrap != -1) {
+      bool char_wraps = pos.x + glyph.width > props.wrap;
+      if(char_wraps) {
+        pos.y += font_height;
+        pos.x = start_pos.x; 
+        line_width = 0.0f;
+        nwraps++;
+        text_height += font_height;
+        word_wrapped = true;
+        for(uint32_t i = word_idx; i < nwords; i++) {
+          word_ys[i] += font_height;
+        }
       }
     }
 
