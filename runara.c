@@ -1715,19 +1715,19 @@ rn_text_render_paragraph_ex(
 
   {
     bool last_word_had_new_line = false;
-    for(uint32_t i = 0; i < nwords; i++) {
-      float word_width = rn_text_props(state, words[i].str, font).width + space_width;
-      if(i == nwords - 1)
-        word_width -= space_width;
-      x += word_width;
-      if(((x > props.wrap && props.wrap != -1.0f)|| last_word_had_new_line)) {
-        y += font_height;
-        x = pos.x + word_width;
-        nwraps++;
+      for(uint32_t i = 0; i < nwords; i++) {
+        float word_width = rn_text_props(state, words[i].str, font).width + space_width;
+        if(i == nwords - 1)
+          word_width -= space_width;
+        x += word_width;
+        if(((x > props.wrap && props.wrap != -1.0f && nwords > 1)|| last_word_had_new_line)) {
+          y += font_height;
+          x = pos.x + word_width;
+          nwraps++;
+        }
+        last_word_had_new_line = words[i].has_newline;
+        word_ys[i] = y;
       }
-      last_word_had_new_line = words[i].has_newline;
-      word_ys[i] = y;
-    }
   }
 
   uint32_t word_idx = 0;
@@ -1777,7 +1777,7 @@ rn_text_render_paragraph_ex(
     if(!word_wrapped)
       pos.y = word_ys[word_idx];
 
-    if(props.wrap != -1) {
+    if(props.wrap != -1 && nwords > 1) {
       bool char_wraps = pos.x + glyph.width > props.wrap;
       if(char_wraps) {
         pos.y += font_height;
