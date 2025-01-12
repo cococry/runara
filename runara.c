@@ -1016,7 +1016,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
   }
 
   FT_GlyphSlot slot = face->glyph;
-  font->space_w = slot->metrics.width >> 6;
+  font->space_w = rn_text_props(state, " ", font).width;
 
   return font;
 }
@@ -1591,7 +1591,7 @@ RnTextProps rn_text_render_ex(RnState* state,
 Word* splitwords(const char* input, uint32_t* word_count) {
   Word* words = NULL;
   *word_count = 0;
-  size_t capacity = 2; // Initial capacity for the words array
+  size_t capacity = 2; 
 
   words = (Word*)malloc(capacity * sizeof(Word));
   if (!words) {
@@ -1600,11 +1600,10 @@ Word* splitwords(const char* input, uint32_t* word_count) {
   }
 
   size_t input_len = strlen(input);
-  size_t start = 0; // Start index of the current word
+  size_t start = 0; 
   for (size_t i = 0; i <= input_len; i++) {
-    // Check for delimiters or end of the string
     if (input[i] == ' ' || input[i] == '\t' || input[i] == '\n' || input[i] == '\0') {
-      if (i > start) { // If there's a word between start and i
+      if (i > start) { 
         if (*word_count >= capacity) {
           capacity *= 2;
           Word* temp = realloc(words, capacity * sizeof(Word));
@@ -1698,7 +1697,6 @@ rn_text_render_paragraph_ex(
   uint32_t nwords;
   Word* words = splitwords(paragraph, &nwords);
   
-  float space_width = rn_text_props(state, " ", font).width;
 
   float word_ys[nwords];
   float x = pos.x;
@@ -1716,11 +1714,11 @@ rn_text_render_paragraph_ex(
   {
     bool last_word_had_new_line = false;
       for(uint32_t i = 0; i < nwords; i++) {
-        float word_width = rn_text_props(state, words[i].str, font).width + space_width;
+        float word_width = rn_text_props(state, words[i].str, font).width + font->space_w;
         if(i == nwords - 1)
-          word_width -= space_width;
+          word_width -= font->space_w;
         x += word_width;
-        if(((x > props.wrap && props.wrap != -1.0f && nwords > 1)|| last_word_had_new_line)) {
+        if(((x > props.wrap && props.wrap != -1.0f && nwords > 1 && i != 0)|| last_word_had_new_line)) {
           y += font_height;
           x = pos.x + word_width;
           nwraps++;
@@ -1769,7 +1767,7 @@ rn_text_render_paragraph_ex(
     }
 
     if(last_word_y != word_ys[word_idx] && last_word_y != -1 && !word_wrapped) {
-      pos.x = start_pos.x - ((codepoint == ' ') ?  space_width : 0.0f);
+      pos.x = start_pos.x - ((codepoint == ' ') ?  font->space_w : 0.0f);
       line_width = 0.0f;
     }
     last_word_y = pos.y;
