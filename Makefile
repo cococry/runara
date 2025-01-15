@@ -1,5 +1,5 @@
 CC=gcc
-INCS=`pkg-config --cflags glfw3 cglm` -Ivendor/glad/include -Ivendor/stb_image/ -Ivendor/uthash/include
+INCS=`pkg-config --cflags glfw3 cglm freetype2` -Ivendor/glad/include -Ivendor/stb_image/ -Ivendor/uthash/include
 LIBS=-lclipboard -lm -lGL -lfreetype -lharfbuzz -lfontconfig
 CFLAGS+=${INCS} ${LIBS} -O3 -ffast-math
 all: lib/runara.a
