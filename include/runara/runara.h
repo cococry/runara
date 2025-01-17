@@ -95,6 +95,24 @@ typedef struct {
 } RnShader;
 
 /**
+ * @struct RnWord
+ * @brief Represents a word within a rendered paragraph 
+ *
+ */
+
+typedef struct {
+  // The string contents of the word
+  char* str;       
+  // Whether or not a new-line follows after 
+  // the word 
+  bool has_newline; 
+  // The width in pixels of the rendered word 
+  // with the font associated to it via the harfbuzz 
+  // text 
+  float width;
+} RnWord;
+
+/**
  * @struct RnTexture 
  * @brief Represents a renderable texture object  
  *
@@ -130,7 +148,10 @@ typedef struct {
   uint32_t id;
   // The with in pixels of a space character 
   // within the font
-  uint32_t space_w;
+  float space_w;
+  // The height in pixels that is advanced after a line 
+  // of rendered text in a paragraph
+  float line_h;
   // The number of spaces that are used 
   // to represent a tab character (default is 4)
   uint32_t tab_w;
@@ -237,6 +258,10 @@ typedef struct {
   char* str;
   // The highest glyph bearing within the text
   float highest_bearing;
+
+  // A list of all words split by space characters that 
+  // are within the paragraph 
+  RnWord* words;
 } RnHarfbuzzText;
 
 /**
@@ -358,6 +383,10 @@ typedef struct {
   float width;
   // The height of the text
   float height;
+
+  // The position of the rendered 
+  // pargraph with alignment applied (e.g centered text)
+  vec2s paragraph_pos;
 } RnTextProps; 
 
 /**

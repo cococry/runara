@@ -1,6 +1,7 @@
 #include "include/runara/runara.h"
 #include <cglm/mat4.h>
 #include <cglm/types-struct.h>
+#include <ctype.h>
 #include <fontconfig/fontconfig.h>
 
 #include <glad/glad.h>
@@ -15,12 +16,6 @@
 #include <string.h>
 #include <time.h>
 
-
-
-typedef struct {
-  char* str;       
-  bool has_newline; 
-} Word;
 
 #ifdef _WIN32
 #define HOMEDIR "USERPROFILE"
@@ -758,6 +753,7 @@ RnHarfbuzzText* get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const c
 RnHarfbuzzText
 load_hb_text_from_str(RnFont font, const char* str) {
   RnHarfbuzzText text;
+  text.words = NULL;
   // Create a HarfBuzz buffer and add text
   text.buf = hb_buffer_create();
   hb_buffer_add_utf8(text.buf, str, -1, 0, -1);
@@ -787,10 +783,10 @@ load_hb_text_from_str(RnFont font, const char* str) {
 }
 
 RnHarfbuzzText get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str) {
-  RnHarfbuzzText* glyph = get_hb_text_from_str(*cache, font, str);
+  RnHarfbuzzText* text = get_hb_text_from_str(*cache, font, str);
 
-  if(glyph) {
-    return *glyph;
+  if(text) {
+    return *text;
   }
 
   RnHarfbuzzText new_text = load_hb_text_from_str(font, str);
@@ -1018,13 +1014,15 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
   FT_GlyphSlot slot = face->glyph;
   font->space_w = rn_text_props(state, " ", font).width;
 
+  font->line_h = font->face->size->metrics.height / 64.0f;
+
   return font;
 }
 
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_LINEAR);
+                         1024, 1024, 4, RN_TEX_FILTER_NEAREST);
 }
 
 void 
@@ -1044,6 +1042,9 @@ rn_set_font_size(RnState* state, RnFont* font, uint32_t size) {
   // Reload the glyph & harfbuzz cache
   rn_reload_font_harfbuzz_cache(state, *font);
   rn_reload_font_glyph_cache(state, font);
+  
+  font->space_w = rn_text_props(state, " ", font).width;
+  font->line_h = font->face->size->metrics.height / 64.0f;
 } 
 
 const char* 
@@ -1516,7 +1517,7 @@ RnTextProps rn_text_render_ex(RnState* state,
     }
   }
 
-  vec2s start_pos = pos;
+  vec2s start_pos = (vec2s){.x = pos.x, .y = pos.y};
 
   // New line characters
   const int32_t line_feed       = 0x000A;
@@ -1584,31 +1585,51 @@ RnTextProps rn_text_render_ex(RnState* state,
 
   return (RnTextProps){
     .width = pos.x - start_pos.x, 
-    .height = textheight
+    .height = textheight,
+    .paragraph_pos = pos
   };
 }
 
-Word* splitwords(const char* input, uint32_t* word_count) {
-  Word* words = NULL;
+RnWord* splitwords(const char* input, uint32_t* word_count) {
+  // Pass 1: Count words
+  size_t input_len = strlen(input);
   *word_count = 0;
-  size_t capacity = 2; 
+  bool in_word = false;
 
-  words = (Word*)malloc(capacity * sizeof(Word));
+  for (size_t i = 0; i <= input_len; i++) {
+    if (isspace(input[i]) || input[i] == '\0') {
+      if (in_word) {
+        (*word_count)++;
+        in_word = false;
+      }
+    } else {
+      in_word = true;
+    }
+  }
+
+  // Allocate memory for the words
+  size_t capacity = *word_count > 2 ? *word_count : 2;
+  RnWord* words = (RnWord*)malloc(capacity * sizeof(RnWord));
+  memset(words, 0, sizeof(RnWord) * capacity);
+
   if (!words) {
     fprintf(stderr, "runara: memory allocation failed\n");
     exit(EXIT_FAILURE);
   }
 
-  size_t input_len = strlen(input);
-  size_t start = 0; 
+  // Pass 2: Store the words
+  size_t start = 0;
+  size_t word_idx = 0;
+  in_word = false;
   for (size_t i = 0; i <= input_len; i++) {
-    if (input[i] == ' ' || input[i] == '\t' || input[i] == '\n' || input[i] == '\0') {
-      if (i > start) { 
-        if (*word_count >= capacity) {
+    if (isspace(input[i]) || input[i] == '\0') {
+      if (in_word) {
+        size_t word_length = i - start;
+        if (word_idx >= capacity) {
           capacity *= 2;
-          Word* temp = realloc(words, capacity * sizeof(Word));
+          RnWord* temp = realloc(words, capacity * sizeof(RnWord));
           if (!temp) {
-            for (uint32_t j = 0; j < *word_count; j++) {
+            for (uint32_t j = 0; j < word_idx; j++) {
               free(words[j].str);
             }
             free(words);
@@ -1618,23 +1639,26 @@ Word* splitwords(const char* input, uint32_t* word_count) {
           words = temp;
         }
 
-        size_t word_length = i - start;
-        words[*word_count].str = (char*)malloc(word_length + 1);
-        if (!words[*word_count].str) {
-          for (uint32_t j = 0; j < *word_count; j++) {
+        words[word_idx].str = (char*)malloc(word_length + 1);
+        if (!words[word_idx].str) {
+          for (uint32_t j = 0; j < word_idx; j++) {
             free(words[j].str);
           }
           free(words);
-          fprintf(stderr, "runara: nemory allocation failed\n");
+          fprintf(stderr, "runara: memory allocation failed\n");
           exit(EXIT_FAILURE);
         }
-
-        strncpy(words[*word_count].str, input + start, word_length);
-        words[*word_count].str[word_length] = '\0';
-        words[*word_count].has_newline = (input[i] == '\n');
-        (*word_count)++;
+        strncpy(words[word_idx].str, input + start, word_length);
+        words[word_idx].str[word_length] = '\0';
+        words[word_idx].has_newline = (input[i] == '\n');
+        word_idx++;
+        in_word = false;
       }
-      start = i + 1; // Update start to the next character after the delimiter
+    } else {
+      if (!in_word) {
+        start = i;
+      }
+      in_word = true;
     }
   }
 
@@ -1667,180 +1691,171 @@ rn_text_render_paragraph_ex(
     RnColor color,
     RnParagraphProps props,
     bool render) {
-  // Get the harfbuzz text information for the string
+
   RnHarfbuzzText hb_text = rn_hb_text_from_str(state, *font, paragraph);
 
-  // Retrieve highest bearing if 
-  // it was not retrived yet.
-  if(!hb_text.highest_bearing) {
+  if (!hb_text.highest_bearing) {
     for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
-      // Get the glyph from the glyph index 
-      RnGlyph glyph =  rn_glyph_from_codepoint(
-        state, font,
-        hb_text.glyph_info[i].codepoint);
-      // Check if the glyph's bearing is higher 
-      // than the current highest bearing
-      if(glyph.bearing_y > hb_text.highest_bearing) {
-        hb_text.highest_bearing = glyph.bearing_y;
-      }
+      RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text.glyph_info[i].codepoint);
+      hb_text.highest_bearing = fmaxf(hb_text.highest_bearing, glyph.bearing_y);
     }
   }
 
-  vec2s start_pos = pos;
-
-  // New line characters
-  const int32_t line_feed       = 0x000A;
-  const int32_t carriage_return = 0x000D;
-  const int32_t line_seperator  = 0x2028;
-  const int32_t paragraph_seperator = 0x2029;
-
+  vec2s start_pos = (vec2s){.x = pos.x, .y = pos.y};
+  const int32_t line_feed = 0x000A, carriage_return = 0x000D, line_seperator = 0x2028, paragraph_seperator = 0x2029;
   uint32_t nwords;
-  Word* words = splitwords(paragraph, &nwords);
-  
 
-  float word_ys[nwords];
-  float x = pos.x;
-  float y = pos.y;
-
-  uint32_t nwraps = 0;
-  float font_height;
-  {
-    FT_Pos ascender = font->face->size->metrics.ascender;
-    FT_Pos descender = font->face->size->metrics.descender;
-    FT_Pos height = font->face->size->metrics.height;
-    font_height = height / 64.0; 
+  if (!hb_text.words) {
+    hb_text.words = splitwords(paragraph, &nwords);
   }
 
-  {
-    bool last_word_had_new_line = false;
-      for(uint32_t i = 0; i < nwords; i++) {
-        float word_width = rn_text_props(state, words[i].str, font).width + font->space_w;
-        if(i == nwords - 1)
-          word_width -= font->space_w;
-        x += word_width;
-        if(((x > props.wrap && props.wrap != -1.0f && nwords > 1 && i != 0)|| last_word_had_new_line)) {
-          y += font_height;
-          x = pos.x + word_width;
-          nwraps++;
-        }
-        last_word_had_new_line = words[i].has_newline;
-        word_ys[i] = y;
-      }
+  float word_ys[nwords];
+  memset(word_ys, 0, sizeof(word_ys));
+
+  float x = pos.x, y = pos.y;
+  uint32_t nwraps = 0;
+  bool last_word_had_new_line = false;
+  float space_w = font->space_w;
+
+  float line_ws[nwords];
+  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+    memset(line_ws, 0, sizeof(line_ws));
+
+  vec2s paragraph_pos = pos;
+
+  uint32_t line_i = 0;
+  for (uint32_t i = 0; i < nwords; i++) {
+    if(!hb_text.words[i].width)
+      hb_text.words[i].width = rn_text_props(state, hb_text.words[i].str, font).width;
+
+    float word_width = hb_text.words[i].width + space_w;
+    if (i == nwords - 1) word_width -= space_w;
+
+    x += word_width;
+
+    if (((x > props.wrap && props.wrap != -1.0f && nwords > 1 && i != 0) || last_word_had_new_line)) {
+      y += font->line_h;
+      x = pos.x + word_width;
+      nwraps++;
+      if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+        line_ws[line_i] -= space_w;
+      line_i++;
+    }
+    if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+      line_ws[line_i] += word_width; 
+    
+    last_word_had_new_line = hb_text.words[i].has_newline;
+    word_ys[i] = y;
+  }
+  for(uint32_t i = 0; i < line_i + 1; i++) {
+    line_ws[i] += space_w;
   }
 
   uint32_t word_idx = 0;
   float last_word_y = -1;
-
-  float text_width = 0.0f;
-  float line_width = 0.0f;
-  float text_height = 0;
-
-  int max_ascender = 0; 
-  int max_descender = 0; 
-
+  float text_width = 0.0f, line_width = 0, text_height = 0;
+  int max_ascender = 0, max_descender = 0;
   bool word_wrapped = false;
-  for (uint32_t i = 0; i < hb_text.glyph_count; i++) {
-    // Get the glyph from the glyph index
-    RnGlyph glyph =  rn_glyph_from_codepoint(
-      state, font,
-      hb_text.glyph_info[i].codepoint); 
 
-    // Calculate position
-    float x_advance = hb_text.glyph_pos[i].x_advance / 64.0f; 
+  float paragraph_w = rn_text_props(state, paragraph, font).width;
+
+  bool first_line = false;
+  line_width = 0.0f;
+
+  float align_diver = (props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 2.0f : 1.0f;
+  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) {
+    float centered = start_pos.x + ((props.wrap - line_ws[0]) / align_diver);
+    pos.x = centered; 
+    paragraph_pos.x = pos.x;
+  }
+
+  line_i = 1;
+  for (uint32_t i = 0; i < hb_text.glyph_count; i++) {
+    RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text.glyph_info[i].codepoint);
+    float x_advance = hb_text.glyph_pos[i].x_advance / 64.0f;
     float y_advance = hb_text.glyph_pos[i].y_advance / 64.0f;
     float x_offset = hb_text.glyph_pos[i].x_offset / 64.0f;
     float y_offset = hb_text.glyph_pos[i].y_offset / 64.0f;
 
-    // Get the unicode codepoint of the currently iterated glyph
     uint32_t codepoint_idx = hb_text.glyph_info[i].cluster;
     char codepoint = paragraph[codepoint_idx];
-
-    if(codepoint_idx != strlen(paragraph) - 1 && 
-      (
-      codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ' ||
-      codepoint == '\t' && paragraph[codepoint_idx + 1] != '\t' ||
-      codepoint == '\n' && paragraph[codepoint_idx + 1] != '\n'
-    ) &&
-      word_idx +  1 < nwords) {
+    
+    if (codepoint_idx != strlen(paragraph) - 1 && 
+        ((codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ') || 
+         (codepoint == '\t' && paragraph[codepoint_idx + 1] != '\t') || 
+         (codepoint == '\n' && paragraph[codepoint_idx + 1] != '\n')) &&
+        word_idx + 1 < nwords) {
       word_idx++;
       word_wrapped = false;
     }
 
-    if(last_word_y != word_ys[word_idx] && last_word_y != -1 && !word_wrapped) {
-      pos.x = start_pos.x - ((codepoint == ' ') ?  font->space_w : 0.0f);
+    if (last_word_y != pos.y && last_word_y != -1.0f) {
+      float x = start_pos.x + ((props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 
+        (props.wrap - line_ws[line_i++]) / align_diver : 0.0f);  
+
+      pos.x = x;
+      if(x < paragraph_pos.x)
+        paragraph_pos.x = x;
+
       line_width = 0.0f;
     }
+    
     last_word_y = pos.y;
-
-    if(!word_wrapped)
-      pos.y = word_ys[word_idx];
-
-    if(props.wrap != -1 && nwords > 1) {
+    if (!word_wrapped) pos.y = word_ys[word_idx];
+    if (props.wrap != -1 && nwords > 1 && props.align != RN_PARAGRAPH_ALIGNMENT_CENTER) {
       bool char_wraps = pos.x + glyph.width > props.wrap;
-      if(char_wraps) {
-        pos.y += font_height;
-        pos.x = start_pos.x; 
+      if (char_wraps) {
+        pos.y += font->line_h;
+        pos.x = start_pos.x;
         line_width = 0.0f;
         nwraps++;
-        text_height += font_height;
+        text_height += font->line_h;
         word_wrapped = true;
-        for(uint32_t i = word_idx; i < nwords; i++) {
-          word_ys[i] += font_height;
+        
+        for (uint32_t i = word_idx; i < nwords; i++) {
+          word_ys[i] += font->line_h;
         }
       }
     }
 
-    // Advance the x position by the tab width if 
-    // we iterate a tab character
-    if(codepoint == '\t') {
-      pos.x += font->tab_w * font->space_w;
+    if (codepoint == '\t') {
+      pos.x += font->tab_w * space_w;
       continue;
     }
 
-    // If the glyph is not within the font, dont render it
-    if(!hb_text.glyph_info[i].codepoint) {
+    if (!hb_text.glyph_info[i].codepoint) {
       continue;
     }
 
     vec2s glyph_pos = {
       pos.x + x_offset,
-      pos.y + hb_text.highest_bearing - y_offset 
+      pos.y + hb_text.highest_bearing - y_offset
     };
 
-    // Render the glyph
-    if(render) {
+    if (render) {
       rn_glyph_render(state, glyph, *font, glyph_pos, color);
     }
 
-    // Advance to the next glyph
     pos.x += x_advance;
     pos.y += y_advance;
-   
+
     line_width += x_advance;
-    if (line_width > text_width) {
-      text_width = line_width;
-    }
-    
-    if (glyph.ascender > max_ascender) {
-      max_ascender = glyph.ascender;
-    }
-    if (glyph.descender > max_descender) {
-      max_descender = glyph.descender;
-    }
-  }
+    text_width = fmaxf(text_width, line_width);
 
-  if(nwraps > 0) {
-    text_height = ((nwraps + 1) * font_height) - max_descender;
-  } else {
-    text_height = max_ascender + max_descender;
+    max_ascender = fmaxf(max_ascender, glyph.ascender);
+    max_descender = fminf(max_descender, glyph.descender);
   }
+  text_width -= space_w;
 
-  return (RnTextProps){
+  text_height = (nwraps > 0) ? ((nwraps + 1) * font->line_h) - max_descender : max_ascender + max_descender;
+
+  return (RnTextProps) {
     .width = text_width, 
-    .height = text_height
+    .height = text_height, 
+    .paragraph_pos = paragraph_pos
   };
-
 }
+
 
 void rn_glyph_render(
   RnState* state,
