@@ -1022,7 +1022,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_NEAREST);
+                         1024, 1024, 4, RN_TEX_FILTER_LINEAR);
 }
 
 void 
@@ -1718,7 +1718,7 @@ rn_text_render_paragraph_ex(
   float space_w = font->space_w;
 
   float line_ws[nwords];
-  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+  if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
     memset(line_ws, 0, sizeof(line_ws));
 
   vec2s paragraph_pos = pos;
@@ -1737,11 +1737,11 @@ rn_text_render_paragraph_ex(
       y += font->line_h;
       x = pos.x + word_width;
       nwraps++;
-      if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+      if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
         line_ws[line_i] -= space_w;
       line_i++;
     }
-    if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+    if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
       line_ws[line_i] += word_width; 
     
     last_word_had_new_line = hb_text.words[i].has_newline;
@@ -1763,8 +1763,8 @@ rn_text_render_paragraph_ex(
   line_width = 0.0f;
 
   float align_diver = (props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 2.0f : 1.0f;
-  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) {
-    float centered = start_pos.x + ((props.wrap - line_ws[0]) / align_diver);
+  if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) {
+    float centered = start_pos.x + (((props.wrap - start_pos.x)  - line_ws[0]) / align_diver);
     pos.x = centered; 
     paragraph_pos.x = pos.x;
   }
@@ -1790,8 +1790,8 @@ rn_text_render_paragraph_ex(
     }
 
     if (last_word_y != pos.y && last_word_y != -1.0f) {
-      float x = start_pos.x + ((props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 
-        (props.wrap - line_ws[line_i++]) / align_diver : 0.0f);  
+      float x = start_pos.x + ((props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) ? 
+        ((props.wrap - start_pos.x) - line_ws[line_i++]) / align_diver : 0.0f);  
 
       pos.x = x;
       if(x < paragraph_pos.x)
@@ -1802,7 +1802,7 @@ rn_text_render_paragraph_ex(
     
     last_word_y = pos.y;
     if (!word_wrapped) pos.y = word_ys[word_idx];
-    if (props.wrap != -1 && nwords > 1 && props.align != RN_PARAGRAPH_ALIGNMENT_CENTER) {
+    /*if (props.wrap != -1 && nwords > 1 && props.align != RN_PARAGRAPH_ALIGNMENT_CENTER) {
       bool char_wraps = pos.x + glyph.width > props.wrap;
       if (char_wraps) {
         pos.y += font->line_h;
@@ -1816,7 +1816,7 @@ rn_text_render_paragraph_ex(
           word_ys[i] += font->line_h;
         }
       }
-    }
+    }*/
 
     if (codepoint == '\t') {
       pos.x += font->tab_w * space_w;
@@ -1845,7 +1845,8 @@ rn_text_render_paragraph_ex(
     max_ascender = fmaxf(max_ascender, glyph.ascender);
     max_descender = fminf(max_descender, glyph.descender);
   }
-  text_width -= space_w;
+  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+    text_width -= space_w;
 
   text_height = (nwraps > 0) ? ((nwraps + 1) * font->line_h) - max_descender : max_ascender + max_descender;
 
