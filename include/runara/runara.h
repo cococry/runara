@@ -178,6 +178,9 @@ typedef struct {
   RnTextureFiltering filter_mode;
   // The path of the font's file 
   char* filepath;
+  // The face index of the loaded font face 
+  uint32_t face_idx;
+
 } RnFont;
 
 /**
@@ -600,13 +603,16 @@ void rn_load_texture_base_types(
  * @param[in] atlas_h The height (in px) of the texture atlas
  * @param[in] tab_w The amount of spaces to use for a tab character
  * @param[in] filter_mode The OpenGL filtering mode of the texture  
+ * @param[in] face_idx The index of the font to load (0 is the default face) 
  * atlas of the font
  *
  * @return The loaded font
  * 
  */
+
 RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
-    uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w, RnTextureFiltering filter_mode);
+    uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w, RnTextureFiltering filter_mode, 
+    uint32_t face_idx);
 
 /**
  * @brief Uses 'rn_load_font_ex' with 'atlas_w' & 'atlas_h'
@@ -621,6 +627,29 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 */
 RnFont* rn_load_font(RnState* state, const char* filepath, uint32_t size);
 
+/**
+ * @brief Loads a font from a given filepath and font face index with FreeType 
+ * and creates the initial empty texture atlas with the 
+ * given dimensions.
+ *
+ * This functions loads a font face on a given filepath 
+ * with the FreeType library and creates the OpenGL texture 
+ * for the atlas of the texture with the given dimensions.
+ *
+ * INFO: The font face index usualy specifies the variation of 
+ * font face within the font file that will be loaded (e.g bold, italic, oblique)
+ *
+ * @param[in] state The state of the library
+ * @param[in] filepath The filepath of which to load the font 
+ * off of.
+ * @param[in] size The pixel size to load the font face with
+ * @param[in] face_idx The index of the font to load (0 is the default face) 
+ *
+ * @return The loaded font
+ * 
+ */
+RnFont* rn_load_font_from_face(RnState* state, const char* filepath, uint32_t size, uint32_t face_idx);
+
 /*
  * @brief Sets the pixel size of a given font.
  *
@@ -633,18 +662,6 @@ RnFont* rn_load_font(RnState* state, const char* filepath, uint32_t size);
  * @param[in] size The pixel size to set the font to
  * */
 void rn_set_font_size(RnState* state, RnFont* font, uint32_t size); 
-
-/*
- * @brief Uses fontconfig to retrieve the actual system filepath 
- * of a given font family name (e.g "Arial" => "/usr/share/fonts/TTF/Arial.ttf")
- *
- * NOTE: This function initializes & de-initializes a fontconfig context 
- * to retrieve the filepath everytime it gets called.
- *
- * @param[in] fontname The name of the font to get the full filepath of 
- * @return The filepath of the fontfile matching the font name (NULL if no match)
- * */
-const char* rn_font_file_from_name(const char* fontname);
 
 /*
  * @brief Deallocates the OpenGL texture object 

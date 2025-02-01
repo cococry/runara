@@ -968,14 +968,14 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
 
 RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
                        uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w,
-                       RnTextureFiltering filter_mode) {
+                       RnTextureFiltering filter_mode, uint32_t face_idx) {
   RnFont* font = malloc(sizeof(*font));
   FT_Face face;
 
   if(!size) return NULL;
 
   // Create a new face from the filepath with freetype
-  if(FT_New_Face(state->ft, filepath, 0, &face)) {
+  if(FT_New_Face(state->ft, filepath, face_idx, &face)) {
     RN_ERROR("Failed to load font file '%s'.", filepath);
     return NULL;
   }
@@ -997,6 +997,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
   font->atlas_x = 0;
   font->atlas_y = 0;
   font->filepath = strdup(filepath);
+  font->face_idx = face_idx;
 
   font->tab_w = tab_w;
 
@@ -1022,7 +1023,13 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_LINEAR);
+                         1024, 1024, 4, RN_TEX_FILTER_LINEAR, 0);
+}
+
+RnFont* 
+rn_load_font_from_face(RnState* state, const char* filepath, uint32_t size, uint32_t face_idx) {
+  return rn_load_font_ex(state, filepath, size, 
+                         1024, 1024, 4, RN_TEX_FILTER_LINEAR, face_idx);
 }
 
 void 
@@ -1046,49 +1053,6 @@ rn_set_font_size(RnState* state, RnFont* font, uint32_t size) {
   font->space_w = rn_text_props(state, " ", font).width;
   font->line_h = font->face->size->metrics.height / 64.0f;
 } 
-
-const char* 
-rn_font_file_from_name(const char* fontname) {
-  if(!fontname) return NULL;
-
-  // Initialize fontconfig context
-  if(!FcInit()) {
-    RN_ERROR("Failed to initialize fontconfig.");
-    FcFini();
-    return NULL;
-  }
-
-  // Create fontconfig pattern
-  FcPattern* pattern = FcPatternCreate();
-  if(!pattern) {
-    RN_ERROR("Failed to create fontconfig pattern.");
-    FcFini();
-    return NULL;
-  }
-
-  // Add the font name to the pattern
-  FcPatternAddString(pattern, FC_FAMILY, (FcChar8*)fontname);
-
-  // Get the best match for the given family
-  FcConfigSubstitute(NULL, pattern, FcMatchPattern);
-  FcDefaultSubstitute(pattern);
-
-  FcResult res;
-  FcPattern* match = FcFontMatch(NULL, pattern, &res);
-
-  if(match) {
-    FcChar8* filepath = NULL;
-
-    if(FcPatternGetString(match, FC_FILE, 0, &filepath) == FcResultMatch) {
-      FcPatternDestroy(pattern);
-      FcFini();
-      return (const char*)filepath;
-    }
-  }
-  FcPatternDestroy(pattern);
-  FcFini();
-  return NULL;
-}
 
 void
 rn_free_texture(RnTexture* tex) {

@@ -1,6 +1,6 @@
 CC=gcc
 INCS=`pkg-config --cflags glfw3 cglm freetype2` -Ivendor/glad/include -Ivendor/stb_image/ -Ivendor/uthash/include
-LIBS=-lclipboard -lm -lGL -lfreetype -lharfbuzz -lfontconfig
+LIBS=-lclipboard -lm -lGL -lfreetype -lharfbuzz 
 CFLAGS+=${INCS} ${LIBS} -O3 -ffast-math
 all: lib/runara.a
 lib/runara.a: lib/runara.o
