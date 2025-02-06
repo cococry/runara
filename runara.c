@@ -52,11 +52,11 @@ static RnGlyph          get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, 
 
 static void             init_hb_cache(RnHarfbuzzCache* cache, size_t init_cap);
 static void             resize_hb_cache(RnHarfbuzzCache* cache, size_t new_cap);
-static void             add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText text); 
+static void             add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText* text); 
 static void             free_hb_cache(RnHarfbuzzCache* cache);
 static RnHarfbuzzText*  get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const char* str);
-static RnHarfbuzzText   load_hb_text_from_str(RnFont font, const char* str);
-static RnHarfbuzzText   get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str);
+static RnHarfbuzzText*  load_hb_text_from_str(RnFont font, const char* str);
+static RnHarfbuzzText*  get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str);
 
 static uint64_t         djb2_hash(const unsigned char *str);
 
@@ -664,11 +664,12 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
 
   glyph.width = slot->bitmap.width;
   glyph.height = slot->bitmap.rows;
-  glyph.bearing_x = font->face->glyph->bitmap_left;
-  glyph.bearing_y = font->face->glyph->bitmap_top;
-  glyph.advance = font->face->glyph->advance.x;
-  glyph.ascender = font->face->glyph->metrics.horiBearingY >> 6;
-  glyph.descender = (font->face->glyph->metrics.height >> 6) - glyph.ascender;
+  glyph.bearing_x = slot->bitmap_left;
+  glyph.bearing_y = slot->bitmap_top;
+  glyph.advance = slot->advance.x;
+  glyph.ascender = slot->metrics.horiBearingY >> 6;
+  glyph.descender = (slot->metrics.height >> 6) - glyph.ascender;
+  glyph.descender = (slot->metrics.horiBearingY - slot->metrics.height) / 64;
 
 
   glyph.codepoint = codepoint;
@@ -703,13 +704,13 @@ RnGlyph get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, uint64_t codepoi
 
 
 void init_hb_cache(RnHarfbuzzCache* cache, size_t init_cap) {
-  cache->texts  = malloc(init_cap * sizeof(*cache->texts));
+  cache->texts  = malloc(init_cap * sizeof(**cache->texts));
   cache->size   = 0;
   cache->cap    = init_cap;
 }
 
 void resize_hb_cache(RnHarfbuzzCache* cache, size_t new_cap) {
-  RnHarfbuzzText* tmp = (RnHarfbuzzText*)realloc(cache->texts, new_cap * sizeof(*cache->texts));
+  RnHarfbuzzText** tmp = (RnHarfbuzzText**)realloc(cache->texts, new_cap * sizeof(**cache->texts));
   if(tmp) {
     cache->texts = tmp;
     cache->cap = new_cap;
@@ -718,7 +719,7 @@ void resize_hb_cache(RnHarfbuzzCache* cache, size_t new_cap) {
   }
 
 }
-void add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText text) {
+void add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText* text) {
   if(cache->size == cache->cap) {
     resize_hb_cache(cache, cache->cap * 2);
   }
@@ -727,7 +728,7 @@ void add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText text) {
 
 void free_hb_cache(RnHarfbuzzCache* cache) {
   for(uint32_t i = 0; i < cache->size; i++) {
-    hb_buffer_destroy(cache->texts[i].buf);
+    hb_buffer_destroy(cache->texts[i]->buf);
   }
   free(cache->texts);
   cache->texts  = NULL;
@@ -738,9 +739,9 @@ void free_hb_cache(RnHarfbuzzCache* cache) {
 RnHarfbuzzText* get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const char* str) {
   uint64_t hash = djb2_hash((unsigned char*)str);
   for(uint32_t i = 0; i < cache.size; i++) {
-    if(cache.texts[i].hash == hash && 
-      cache.texts[i].font_id == font.id) {
-      return &cache.texts[i];
+    if(cache.texts[i]->hash == hash && 
+      cache.texts[i]->font_id == font.id) {
+      return cache.texts[i];
     }
   }
   return NULL;
@@ -750,46 +751,48 @@ RnHarfbuzzText* get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const c
  * This function loads the 
  * text rendering information for a given string 
  * with harfbuzz */
-RnHarfbuzzText
+RnHarfbuzzText*
 load_hb_text_from_str(RnFont font, const char* str) {
-  RnHarfbuzzText text;
-  text.words = NULL;
+  RnHarfbuzzText* text = malloc(sizeof(*text));
+  text->words  = NULL;
+  text->nwords = 0;
+
   // Create a HarfBuzz buffer and add text
-  text.buf = hb_buffer_create();
-  hb_buffer_add_utf8(text.buf, str, -1, 0, -1);
+  text->buf = hb_buffer_create();
+  hb_buffer_add_utf8(text->buf, str, -1, 0, -1);
 
   // Shape the text
-  hb_buffer_guess_segment_properties(text.buf);
-  hb_shape(font.hb_font, text.buf, NULL, 0);
+  hb_buffer_guess_segment_properties(text->buf);
+  hb_shape(font.hb_font, text->buf, NULL, 0);
 
   int32_t len;
   // Retrieve glyph information and positions
-  text.glyph_info = hb_buffer_get_glyph_infos(text.buf, &text.glyph_count);
-  text.glyph_pos = hb_buffer_get_glyph_positions(text.buf, &text.glyph_count);
+  text->glyph_info = hb_buffer_get_glyph_infos(text->buf, &text->glyph_count);
+  text->glyph_pos = hb_buffer_get_glyph_positions(text->buf, &text->glyph_count);
 
   // Generate a hash for the text
-  text.hash = djb2_hash((const unsigned char*)str);
+  text->hash = djb2_hash((const unsigned char*)str);
 
   // Set font ID for the harfbuzz text
-  text.font_id = font.id;
+  text->font_id = font.id;
 
   // Set rendered string of the text 
-  text.str = malloc(strlen(str) + 1);
-  strcpy(text.str, str);
+  text->str = malloc(strlen(str) + 1);
+  strcpy(text->str, str);
 
-  text.highest_bearing = 0.0f;
+  text->highest_bearing = 0.0f;
 
   return text;
 }
 
-RnHarfbuzzText get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str) {
+RnHarfbuzzText* get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str) {
   RnHarfbuzzText* text = get_hb_text_from_str(*cache, font, str);
 
   if(text) {
-    return *text;
+    return text;
   }
 
-  RnHarfbuzzText new_text = load_hb_text_from_str(font, str);
+  RnHarfbuzzText* new_text = load_hb_text_from_str(font, str);
   add_text_to_hb_cache(cache, new_text);
   return new_text; 
 }
@@ -1285,10 +1288,11 @@ void
 rn_reload_font_harfbuzz_cache(RnState* state, RnFont font) {
   RnHarfbuzzText* text = NULL, *tmp = NULL;
   for(uint32_t i = 0; i < state->hb_cache.size; i++) {
-    RnHarfbuzzText* text = &state->hb_cache.texts[i];
+    RnHarfbuzzText* text = state->hb_cache.texts[i];
     if(text->font_id == font.id) {
       hb_buffer_destroy(text->buf);
-      *text = load_hb_text_from_str(font, text->str);
+      free(text);
+      text = load_hb_text_from_str(font, text->str);
     }
   }
 }
@@ -1463,20 +1467,20 @@ RnTextProps rn_text_render_ex(RnState* state,
                               bool render) {
 
   // Get the harfbuzz text information for the string
-  RnHarfbuzzText hb_text = rn_hb_text_from_str(state, *font, text);
+  RnHarfbuzzText* hb_text = rn_hb_text_from_str(state, *font, text);
 
   // Retrieve highest bearing if 
   // it was not retrived yet.
-  if(!hb_text.highest_bearing) {
-    for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
+  if(!hb_text->highest_bearing) {
+    for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
       // Get the glyph from the glyph index 
       RnGlyph glyph =  rn_glyph_from_codepoint(
         state, font,
-        hb_text.glyph_info[i].codepoint);
+        hb_text->glyph_info[i].codepoint);
       // Check if the glyph's bearing is higher 
       // than the current highest bearing
-      if(glyph.bearing_y > hb_text.highest_bearing) {
-        hb_text.highest_bearing = glyph.bearing_y;
+      if(glyph.bearing_y > hb_text->highest_bearing) {
+        hb_text->highest_bearing = glyph.bearing_y;
       }
     }
   }
@@ -1491,14 +1495,14 @@ RnTextProps rn_text_render_ex(RnState* state,
 
   float textheight = 0;
 
-  for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
+  for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
       state, font,
-      hb_text.glyph_info[i].codepoint); 
+      hb_text->glyph_info[i].codepoint); 
 
     // Get the unicode codepoint of the currently iterated glyph
-    char codepoint = text[hb_text.glyph_info[i].cluster];
+    char codepoint = text[hb_text->glyph_info[i].cluster];
     // Check if the unicode codepoint is a new line and advance 
     // to the next line if so
     if(codepoint == line_feed || codepoint == carriage_return ||
@@ -1518,19 +1522,19 @@ RnTextProps rn_text_render_ex(RnState* state,
     }
 
     // If the glyph is not within the font, dont render it
-    if(!hb_text.glyph_info[i].codepoint) {
+    if(!hb_text->glyph_info[i].codepoint) {
       continue;
     }
 
     // Calculate position
-    float x_advance = hb_text.glyph_pos[i].x_advance / 64.0f; 
-    float y_advance = hb_text.glyph_pos[i].y_advance / 64.0f;
-    float x_offset = hb_text.glyph_pos[i].x_offset / 64.0f;
-    float y_offset = hb_text.glyph_pos[i].y_offset / 64.0f;
+    float x_advance = hb_text->glyph_pos[i].x_advance / 64.0f; 
+    float y_advance = hb_text->glyph_pos[i].y_advance / 64.0f;
+    float x_offset = hb_text->glyph_pos[i].x_offset / 64.0f;
+    float y_offset = hb_text->glyph_pos[i].y_offset / 64.0f;
 
     vec2s glyph_pos = {
       pos.x + x_offset,
-      pos.y + hb_text.highest_bearing - y_offset 
+      pos.y + hb_text->highest_bearing - y_offset 
     };
 
     // Render the glyph
@@ -1656,167 +1660,144 @@ rn_text_render_paragraph_ex(
     RnParagraphProps props,
     bool render) {
 
-  RnHarfbuzzText hb_text = rn_hb_text_from_str(state, *font, paragraph);
+  RnHarfbuzzText* hb_text = rn_hb_text_from_str(state, *font, paragraph);
 
-  if (!hb_text.highest_bearing) {
-    for (unsigned int i = 0; i < hb_text.glyph_count; i++) {
-      RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text.glyph_info[i].codepoint);
-      hb_text.highest_bearing = fmaxf(hb_text.highest_bearing, glyph.bearing_y);
+  if (!hb_text->highest_bearing) {
+    for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
+      RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text->glyph_info[i].codepoint);
+      hb_text->highest_bearing = fmaxf(hb_text->highest_bearing, glyph.bearing_y);
     }
   }
 
   vec2s start_pos = (vec2s){.x = pos.x, .y = pos.y};
   const int32_t line_feed = 0x000A, carriage_return = 0x000D, line_seperator = 0x2028, paragraph_seperator = 0x2029;
-  uint32_t nwords;
 
-  if (!hb_text.words) {
-    hb_text.words = splitwords(paragraph, &nwords);
+  uint32_t nwords = hb_text->nwords;
+
+  if (!hb_text->words) {
+    hb_text->words = splitwords(paragraph, &hb_text->nwords);
   }
+  if(!nwords) return (RnTextProps){0};
 
   float word_ys[nwords];
   memset(word_ys, 0, sizeof(word_ys));
-
-  float x = pos.x, y = pos.y;
   uint32_t nwraps = 0;
-  bool last_word_had_new_line = false;
-  float space_w = font->space_w;
-
-  float line_ws[nwords];
-  if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
-    memset(line_ws, 0, sizeof(line_ws));
-
+  float x = pos.x, y = pos.y;
+  uint32_t _it = 0;
   vec2s paragraph_pos = pos;
+  uint32_t word_idx = 0;
+  float ylast = -1;
+  float textw = 0.0f, linew = 0; 
+  int32_t maxasc = 0, maxdec = 0;
 
-  uint32_t line_i = 0;
+  float lw[nwords];
+  memset(lw, font->space_w, sizeof(lw));
+  bool newline = false;
   for (uint32_t i = 0; i < nwords; i++) {
-    if(!hb_text.words[i].width)
-      hb_text.words[i].width = rn_text_props(state, hb_text.words[i].str, font).width;
+    bool left = props.align == RN_PARAGRAPH_ALIGNMENT_LEFT;
+    if(!hb_text->words[i].width)
+      hb_text->words[i].width = rn_text_props(state, hb_text->words[i].str, font).width;
 
-    float word_width = hb_text.words[i].width + space_w;
-    if (i == nwords - 1) word_width -= space_w;
+    float word_width = hb_text->words[i].width + font->space_w;
+    if (i == nwords - 1) word_width -= font->space_w;
 
     x += word_width;
 
-    if (((x > props.wrap && props.wrap != -1.0f && nwords > 1 && i != 0) || last_word_had_new_line)) {
+    if (((x > props.wrap && props.wrap != -1.0f && 
+      nwords > 1 && i != 0) || 
+      newline)) {
       y += font->line_h;
       x = pos.x + word_width;
       nwraps++;
-      if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
-        line_ws[line_i] -= space_w;
-      line_i++;
+      if(!left)
+        lw[_it] -= font->space_w;
+      _it++;
     }
-    if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT)
-      line_ws[line_i] += word_width; 
-    
-    last_word_had_new_line = hb_text.words[i].has_newline;
+    if(!left)
+      lw[_it] += word_width; 
+
+    newline = hb_text->words[i].has_newline;
     word_ys[i] = y;
   }
-  for(uint32_t i = 0; i < line_i + 1; i++) {
-    line_ws[i] += space_w;
-  }
 
-  uint32_t word_idx = 0;
-  float last_word_y = -1;
-  float text_width = 0.0f, line_width = 0, text_height = 0;
-  int max_ascender = 0, max_descender = 0;
-  bool word_wrapped = false;
-
-  float paragraph_w = rn_text_props(state, paragraph, font).width;
-
-  bool first_line = false;
-  line_width = 0.0f;
 
   float align_diver = (props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 2.0f : 1.0f;
   if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) {
-    float centered = start_pos.x + (((props.wrap - start_pos.x)  - line_ws[0]) / align_diver);
+    float centered = start_pos.x + (((props.wrap - start_pos.x)  - lw[0]) / align_diver);
     pos.x = centered; 
     paragraph_pos.x = pos.x;
   }
 
-  line_i = 1;
-  for (uint32_t i = 0; i < hb_text.glyph_count; i++) {
-    RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text.glyph_info[i].codepoint);
-    float x_advance = hb_text.glyph_pos[i].x_advance / 64.0f;
-    float y_advance = hb_text.glyph_pos[i].y_advance / 64.0f;
-    float x_offset = hb_text.glyph_pos[i].x_offset / 64.0f;
-    float y_offset = hb_text.glyph_pos[i].y_offset / 64.0f;
+  _it = 1;
+  for (uint32_t i = 0; i < hb_text->glyph_count; i++) {
+    bool wrapped = false;
+    if (!hb_text->glyph_info[i].codepoint) 
+      continue;
+    RnGlyph glyph = rn_glyph_from_codepoint(state, font, hb_text->glyph_info[i].codepoint);
+    hb_glyph_position_t hbpos = hb_text->glyph_pos[i];
+    float xadv = hbpos.x_advance / 64.0f;
+    float yadv = hbpos.y_advance / 64.0f;
+    float xoff = hbpos.x_offset / 64.0f;
+    float yoff = hbpos.y_offset / 64.0f;
 
-    uint32_t codepoint_idx = hb_text.glyph_info[i].cluster;
+    uint32_t codepoint_idx = hb_text->glyph_info[i].cluster;
     char codepoint = paragraph[codepoint_idx];
-    
+
     if (codepoint_idx != strlen(paragraph) - 1 && 
-        ((codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ') || 
-         (codepoint == '\t' && paragraph[codepoint_idx + 1] != '\t') || 
-         (codepoint == '\n' && paragraph[codepoint_idx + 1] != '\n')) &&
-        word_idx + 1 < nwords) {
+      ((codepoint == ' ' && paragraph[codepoint_idx + 1] != ' ') || 
+      (codepoint == '\t' && paragraph[codepoint_idx + 1] != '\t') || 
+      (codepoint == '\n' && paragraph[codepoint_idx + 1] != '\n')) &&
+      word_idx + 1 < nwords) {
       word_idx++;
-      word_wrapped = false;
+      wrapped = false;
     }
 
-    if (last_word_y != pos.y && last_word_y != -1.0f) {
+    if (ylast != pos.y && ylast != -1.0f) {
       float x = start_pos.x + ((props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) ? 
-        ((props.wrap - start_pos.x) - line_ws[line_i++]) / align_diver : 0.0f);  
+        ((props.wrap - start_pos.x) - lw[_it++]) / align_diver : 0.0f);  
 
       pos.x = x;
       if(x < paragraph_pos.x)
         paragraph_pos.x = x;
 
-      line_width = 0.0f;
+      linew = 0.0f;
+      maxdec = 0;
+      maxasc = 0;
     }
-    
-    last_word_y = pos.y;
-    if (!word_wrapped) pos.y = word_ys[word_idx];
-    /*if (props.wrap != -1 && nwords > 1 && props.align != RN_PARAGRAPH_ALIGNMENT_CENTER) {
-      bool char_wraps = pos.x + glyph.width > props.wrap;
-      if (char_wraps) {
-        pos.y += font->line_h;
-        pos.x = start_pos.x;
-        line_width = 0.0f;
-        nwraps++;
-        text_height += font->line_h;
-        word_wrapped = true;
-        
-        for (uint32_t i = word_idx; i < nwords; i++) {
-          word_ys[i] += font->line_h;
-        }
-      }
-    }*/
+
+    ylast = pos.y;
+    if (!wrapped) pos.y = word_ys[word_idx];
+
 
     if (codepoint == '\t') {
-      pos.x += font->tab_w * space_w;
-      continue;
-    }
-
-    if (!hb_text.glyph_info[i].codepoint) {
+      pos.x += font->tab_w * font->space_w;
       continue;
     }
 
     vec2s glyph_pos = {
-      pos.x + x_offset,
-      pos.y + hb_text.highest_bearing - y_offset
+      pos.x + xoff,
+      pos.y + hb_text->highest_bearing - yoff 
     };
 
     if (render) {
       rn_glyph_render(state, glyph, *font, glyph_pos, color);
     }
 
-    pos.x += x_advance;
-    pos.y += y_advance;
+    pos.x += xadv;
+    pos.y += yadv;
+    linew += xadv;
 
-    line_width += x_advance;
-    text_width = fmaxf(text_width, line_width);
-
-    max_ascender = fmaxf(max_ascender, glyph.ascender);
-    max_descender = fminf(max_descender, glyph.descender);
+    textw = fmaxf(textw, linew);
+    maxasc = fmaxf(maxasc, glyph.ascender);
+    maxdec = fminf(maxdec, glyph.descender);
   }
   if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
-    text_width -= space_w;
+    textw -= font->space_w;
 
-  text_height = (nwraps > 0) ? ((nwraps + 1) * font->line_h) - max_descender : max_ascender + max_descender;
-
-  return (RnTextProps) {
-    .width = text_width, 
-    .height = text_height, 
+  float last_line_h = maxasc + abs(maxdec);
+  return (RnTextProps){
+    .width = textw, 
+    .height = (nwraps > 0) ? (nwraps * font->line_h + last_line_h) : last_line_h, 
     .paragraph_pos = paragraph_pos
   };
 }
@@ -1858,7 +1839,7 @@ RnGlyph rn_glyph_from_codepoint(
 ) {
   return get_glyph_from_cache(&state->glyph_cache, font, codepoint);
 }
-RnHarfbuzzText rn_hb_text_from_str(
+RnHarfbuzzText* rn_hb_text_from_str(
   RnState* state,
   RnFont font,
   const char* str

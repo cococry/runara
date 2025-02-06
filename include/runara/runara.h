@@ -265,6 +265,7 @@ typedef struct {
   // A list of all words split by space characters that 
   // are within the paragraph 
   RnWord* words;
+  uint32_t nwords;
 } RnHarfbuzzText;
 
 /**
@@ -409,7 +410,7 @@ typedef struct {
  * harfbuzz text information
  */
 typedef struct {
-  RnHarfbuzzText* texts;
+  RnHarfbuzzText** texts;
   size_t size, cap;
 } RnHarfbuzzCache;
 
@@ -1353,7 +1354,7 @@ RnGlyph rn_glyph_from_codepoint(
  * @return The retrieved harfbuzz data associated with the 
  * string.
  * */
-RnHarfbuzzText rn_hb_text_from_str(
+RnHarfbuzzText* rn_hb_text_from_str(
     RnState* state, 
     RnFont font, 
     const char* str
