@@ -1728,6 +1728,9 @@ rn_text_render_paragraph_ex(
     paragraph_pos.x = pos.x;
   }
 
+  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
+    pos.x += font->space_w;
+
   _it = 1;
   for (uint32_t i = 0; i < hb_text->glyph_count; i++) {
     bool wrapped = false;
@@ -1754,7 +1757,8 @@ rn_text_render_paragraph_ex(
 
     if (ylast != pos.y && ylast != -1.0f) {
       float x = start_pos.x + ((props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) ? 
-        ((props.wrap - start_pos.x) - lw[_it++]) / align_diver : 0.0f);  
+        ((props.wrap - start_pos.x) - lw[_it++]) / align_diver : 0.0f) + 
+        (props.align == RN_PARAGRAPH_ALIGNMENT_CENTER ? font->space_w : 0.0f);  
 
       pos.x = x;
       if(x < paragraph_pos.x)
