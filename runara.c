@@ -1026,7 +1026,7 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_LINEAR, 0);
+                         1024, 1024, 4, RN_TEX_FILTER_NEAREST, 0);
 }
 
 RnFont* 
