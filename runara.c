@@ -1718,6 +1718,11 @@ rn_text_render_paragraph_ex(
 
     newline = hb_text->words[i].has_newline;
     word_ys[i] = y;
+    if(state->cull_end.y != -1.0f) {
+      if(word_ys[i] > state->cull_end.y + font->size && render) {
+        break;  
+      }
+    }
   }
 
 
@@ -1730,7 +1735,6 @@ rn_text_render_paragraph_ex(
 
   if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
     pos.x += font->space_w;
-
   _it = 1;
   for (uint32_t i = 0; i < hb_text->glyph_count; i++) {
     bool wrapped = false;
@@ -1782,6 +1786,17 @@ rn_text_render_paragraph_ex(
       pos.x + xoff,
       pos.y + hb_text->highest_bearing - yoff 
     };
+    if(state->cull_start.y != -1.0f) {
+      if(glyph_pos.y < state->cull_start.y - font->size && render) {
+        continue;
+      }
+    }
+    if(state->cull_end.y != -1.0f) {
+      if(glyph_pos.y > state->cull_end.y + font->size && render) {
+        break;
+      }
+    }
+
 
     if (render) {
       rn_glyph_render(state, glyph, *font, glyph_pos, color);
