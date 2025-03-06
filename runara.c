@@ -334,15 +334,18 @@ renderer_init(RnState* state) {
     "}\n"
     "\n"
     "void main() {\n"
-    "     if(u_screen_size.y - gl_FragCoord.y < v_min_coord.y && v_min_coord.y != -1) {\n"
-    "         discard;\n"
-    "     }\n"
-    "     if(u_screen_size.y - gl_FragCoord.y > v_max_coord.y && v_max_coord.y != -1) {\n"
-    "         discard;\n"
-    "     }\n"
-    "     if ((gl_FragCoord.x < v_min_coord.x && v_min_coord.x != -1) || (gl_FragCoord.x > v_max_coord.x && v_max_coord.x != -1)) {\n"
-    "         discard;\n" 
-    "     }\n"
+     "float bias = 0.5; // Small bias to prevent missing pixels\n"
+    "\n"
+    "if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) {\n"
+    "    discard;\n"
+    "}\n"
+    "if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) {\n"
+    "    discard;\n"
+    "}\n"
+    "if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || \n"
+    "    (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) {\n"
+    "    discard;\n"
+    "}\n"
     " if(v_is_text == 1.0) {\n"
     "   vec4 sampled = vec4(1.0, 1.0, 1.0, texture(u_textures[int(v_tex_index)], v_texcoord).r);\n"
     "   o_color = v_color * sampled;\n"
@@ -354,12 +357,14 @@ renderer_init(RnState* state) {
     "     display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color;\n"
     "   }\n"
     "   vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
+    "   if(v_corner_radius != 0.0f && v_is_text != 1.0f) {\n"
     "   vec2 size_adjusted = v_size_px + v_corner_radius * 2.0f;\n"
     "   vec2 pos_adjusted = v_pos_px - v_corner_radius;\n"
     "   vec2 bottom_right = pos_adjusted + size_adjusted;\n"
     "   if (frag_pos.x < pos_adjusted.x || frag_pos.x > bottom_right.x ||\n"
     "     frag_pos.y < pos_adjusted.y || frag_pos.y > bottom_right.y) {\n"
     "       discard;\n"
+    "   }\n"
     "   }\n"
     "  const vec2 rect_center = vec2(\n"
     "    v_pos_px.x + v_size_px.x / 2.0f,\n"
@@ -382,10 +387,10 @@ renderer_init(RnState* state) {
     "  float smoothed_alpha = 1.0f - smoothstep(0.0f,\n"
     "    edge_softness, distance);\n"
     "\n"
-    "  float border_alpha = 1.0f - smoothstep(\n"
-    "    v_border_width - border_softness,\n"
-    "    v_border_width, abs(distance));\n"
-    "\n"
+    "float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance)) :\n"
+"                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+
+
     "  float shadow_distance = rounded_box_sdf(\n"
     "    gl_FragCoord.xy - rect_center + shadow_offset,\n"
     "    half_size, corner_radius\n"
@@ -471,22 +476,19 @@ void renderer_begin(RnState* state) {
 }
 
 /* This function creates the atlas texture of 
- * a given font with OpenGL. 
+ * a given font with OpenGL
  * */
 void create_font_atlas(RnFont* font) {
-
-  // Create atlas texture
   glGenTextures(1, &font->atlas_id);
   glBindTexture(GL_TEXTURE_2D, font->atlas_id);
-  // Set parameters
+
   int32_t filter_mode = font->filter_mode == RN_TEX_FILTER_LINEAR ?
     GL_LINEAR : GL_NEAREST;
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter_mode); 
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter_mode);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter_mode);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter_mode); 
 
-  // Upload initial texture data
   glTexImage2D(
     GL_TEXTURE_2D,
     0, 
@@ -497,7 +499,11 @@ void create_font_atlas(RnFont* font) {
     GL_RGBA,
     GL_UNSIGNED_BYTE,
     NULL);
+
+  // Generate mipmaps
+  glGenerateMipmap(GL_TEXTURE_2D);
 }
+
 
 void init_glyph_cache(RnGlyphCache* cache, size_t init_cap) {
   cache->glyphs = malloc(init_cap * sizeof(*cache->glyphs));
@@ -1136,12 +1142,6 @@ rn_add_vertex_ex(
   vec2s texcoord, 
   float tex_index,
   bool is_text) {
-
-  // Round to nearest integer
-  int rounded_x = (int)(pos.x);  
-  int rounded_y = (int)(pos.y);
-  int rounded_w = (int)(size.x);  
-  int rounded_h = (int)(size.y);
   // If the vetex does not fit into the current batch, 
   // advance to the next batch
   if(state->render.vert_count >= RN_MAX_RENDER_BATCH) {
@@ -1156,11 +1156,11 @@ rn_add_vertex_ex(
   state->render.verts[state->render.vert_count].pos[0] = result[0];
   state->render.verts[state->render.vert_count].pos[1] = result[1];
 
-  vertex->pos_px[0] = rounded_x; 
-  vertex->pos_px[1] = rounded_y;
+  vertex->pos_px[0] = pos.x; 
+  vertex->pos_px[1] = pos.y;
 
-  vertex->size_px[0] = rounded_w; 
-  vertex->size_px[1] = rounded_h;
+  vertex->size_px[0] = size.x; 
+  vertex->size_px[1] = size.y;
 
   vec4s color_zto = rn_color_to_zto(color); 
 
