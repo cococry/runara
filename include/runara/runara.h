@@ -309,7 +309,7 @@ typedef struct {
   vec2 min_coord;
   // Specifies the ending position from where to cull the 
   // shape that contains the vertex 
-  vec2 max_coord;
+
 } RnVertex; // 92 Bytes per vertex
 
 /**
