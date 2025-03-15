@@ -666,6 +666,7 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
     GL_UNSIGNED_BYTE, 
     rgba_data);
 
+  glGenerateMipmap(GL_TEXTURE_2D);
   /* Set glyph attributes */
 
   glyph.width = slot->bitmap.width;
@@ -913,8 +914,8 @@ rn_load_texture_base_types(
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
   switch(filter) {
     case RN_TEX_FILTER_LINEAR:
-      glTextureParameteri(*o_tex_id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-      glTextureParameteri(*o_tex_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTextureParameteri(*o_tex_id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       break;
     case RN_TEX_FILTER_NEAREST:
       glTextureParameteri(*o_tex_id, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -954,8 +955,8 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
   switch(filter) {
     case RN_TEX_FILTER_LINEAR:
-      glTextureParameteri(tex.id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-      glTextureParameteri(tex.id, GL_TEXTURE_MAG_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTextureParameteri(tex.id, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTextureParameteri(tex.id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       break;
     case RN_TEX_FILTER_NEAREST:
       glTextureParameteri(tex.id, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
