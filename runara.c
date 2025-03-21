@@ -162,7 +162,7 @@ renderer_init(RnState* state) {
 
   // OpenGL Setup 
   glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
   // Allocate memory for vertices
   state->render.vert_count = 0;
@@ -347,8 +347,8 @@ renderer_init(RnState* state) {
     "    discard;\n"
     "}\n"
     " if(v_is_text == 1.0) {\n"
-    "   vec4 sampled = vec4(1.0, 1.0, 1.0, texture(u_textures[int(v_tex_index)], v_texcoord).r);\n"
-    "   o_color = v_color * sampled;\n"
+    "   vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
+    "   o_color = sampled * v_color;\n"
     "} else {\n"
     "   vec4 display_color;"
     "   if(v_tex_index == -1) {\n"
