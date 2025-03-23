@@ -29,14 +29,11 @@ clean:
 install: all
 	install -Dm644 lib/librunara.a /usr/local/lib/librunara.a
 	install -d /usr/local/include/runara
-	cp -r include/runara/* /usr/local/include/runara/
 	install -d /usr/local/include/uthash
-	cp -r vendor/uthash/include/uthash /usr/local/include/uthash/
 
 # Uninstall installed files
 uninstall:
 	rm -f /usr/local/lib/librunara.a
 	rm -rf /usr/local/include/runara
-	rm -rf /usr/local/include/uthash
 
 .PHONY: all clean install uninstall
