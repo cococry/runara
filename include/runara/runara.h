@@ -610,10 +610,57 @@ void rn_load_texture_base_types(
  * @return The loaded font
  * 
  */
-
 RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
     uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w, RnTextureFiltering filter_mode, 
     uint32_t face_idx);
+
+/**
+ * @brief Creates a font from an already loaded FreeType font face 
+ * and Harfbuzz font handle, and generates the corresponding texture atlas.
+ *
+ * This function allows creating a font object by providing an already 
+ * loaded FreeType font face and Harfbuzz font handle. It then creates 
+ * the OpenGL texture atlas for the font and sets the necessary 
+ * attributes for rendering, including space width and line height.
+ *
+ * INFO: The `space_w` parameter allows you to specify the width of the 
+ * space character, which is commonly precomputed.
+ *
+ * @param[in] state The state of the library.
+ * @param[in] face The pre-loaded FreeType font face.
+ * @param[in] hb_font The pre-loaded Harfbuzz font handle.
+ * @param[in] size The pixel size to use for rendering the font.
+ * @param[in] atlas_w The width of the font's OpenGL texture atlas.
+ * @param[in] atlas_h The height of the font's OpenGL texture atlas.
+ * @param[in] tab_w The width of the tab character.
+ * @param[in] filter_mode The texture filtering mode for the atlas.
+ * @param[in] face_idx The index of the font face (useful if the font file 
+ * contains multiple faces, such as bold or italic).
+ * @param[in] filepath The filepath of the font, used for debugging purposes.
+ * @param[in] space_w The width of the space character.
+ *
+ * @return A pointer to the created `RnFont` object.
+ */
+RnFont* rn_create_font_from_loaded_data_ex(RnState* state, FT_Face face, hb_font_t* hb_font,
+                                        uint32_t size, uint32_t atlas_w, uint32_t atlas_h, 
+                                        uint32_t tab_w, RnTextureFiltering filter_mode, 
+                                        uint32_t face_idx, const char* filepath, float space_w);
+
+/**
+ * @brief Uses 'rn_load_font_from_data_ex' with 'atlas_w' & 'atlas_h'
+ * set to 1024. 'tab_w' is set to 4
+ *
+ * @param[in] state The state of the library
+ * @param[in] filepath The filepath of which to load the font 
+ * off of.
+ * @param[in] size The pixel size to load the font face with
+ *
+ * @return The loaded font
+*/
+
+RnFont* rn_create_font_from_loaded_data(RnState* state, FT_Face face, hb_font_t* hb_font, float space_w,
+                                        uint32_t size, 
+                                        uint32_t face_idx, const char* filepath);
 
 /**
  * @brief Uses 'rn_load_font_ex' with 'atlas_w' & 'atlas_h'

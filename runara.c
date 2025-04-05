@@ -1031,6 +1031,55 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
 }
 
 RnFont* 
+rn_create_font_from_loaded_data_ex(RnState* state, FT_Face face, hb_font_t* hb_font,
+                                   uint32_t size, uint32_t atlas_w, uint32_t atlas_h, 
+                                   uint32_t tab_w, RnTextureFiltering filter_mode, 
+                                   uint32_t face_idx, const char* filepath, float space_w) {
+  RnFont* font = malloc(sizeof(*font));
+
+  if (!font) {
+    RN_ERROR("Failed to allocate memory for font.");
+    return NULL;
+  }
+
+  font->face = face;
+  font->size = size;
+
+  // Use the provided Harfbuzz font handle
+  font->hb_font = hb_font;
+
+  font->id = state->font_id++;
+
+  font->atlas_w = atlas_w;
+  font->atlas_h = atlas_h;
+  font->atlas_row_h = 0;
+  font->atlas_x = 0;
+  font->atlas_y = 0;
+
+  font->filepath = strdup(filepath);
+  font->face_idx = face_idx;
+  font->tab_w = tab_w;
+  font->filter_mode = filter_mode;
+
+  // Create the OpenGL font atlas texture 
+  create_font_atlas(font);
+
+  // Use the provided space_w instead of calculating it
+  font->space_w = space_w;
+
+  font->line_h = font->face->size->metrics.height / 64.0f;
+
+  return font;
+}
+
+RnFont* 
+rn_create_font_from_loaded_data(RnState* state, FT_Face face, hb_font_t* hb_font, float space_w,
+                                        uint32_t size, 
+                                        uint32_t face_idx, const char* filepath) {
+  return rn_create_font_from_loaded_data_ex(state, face, hb_font, size, 1024, 1024, 4, RN_TEX_FILTER_LINEAR, face_idx, filepath, space_w);
+}
+
+RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
                          1024, 1024, 4, RN_TEX_FILTER_NEAREST, 0);
