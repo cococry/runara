@@ -29,12 +29,7 @@ clean:
 install: all
 	install -Dm644 lib/librunara.a /usr/local/lib/librunara.a
 	install -d /usr/local/include/runara
-<<<<<<< HEAD
-	install -d /usr/local/include/uthash
-
-=======
 	cp -r include/runara/* /usr/local/include/runara/
->>>>>>> 73a039e (loading fonts from data)
 # Uninstall installed files
 uninstall:
 	rm -f /usr/local/lib/librunara.a
