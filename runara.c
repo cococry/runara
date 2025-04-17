@@ -1608,12 +1608,33 @@ RnTextProps rn_text_render_ex(RnState* state,
   };
 }
 
+
+char* trimspaces(char* str) {
+  char* end;
+
+  // Trim leading space
+  while (isspace((unsigned char)*str)) str++;
+
+  if (*str == 0)  // All spaces?
+    return str;
+
+  // Trim trailing space
+  end = str + strlen(str) - 1;
+  while (end > str && isspace((unsigned char)*end)) end--;
+
+  // Write new null terminator
+  *(end + 1) = '\0';
+
+  return str;
+}
+
+
 RnWord* splitwords(const char* input, uint32_t* word_count) {
   // Pass 1: Count words
   size_t input_len = strlen(input);
   *word_count = 0;
   bool in_word = false;
-
+ 
   for (size_t i = 0; i <= input_len; i++) {
     if (isspace(input[i]) || input[i] == '\0') {
       if (in_word) {
@@ -1679,7 +1700,6 @@ RnWord* splitwords(const char* input, uint32_t* word_count) {
       in_word = true;
     }
   }
-
   return words;
 }
 
@@ -1703,13 +1723,15 @@ RnTextProps rn_text_render_paragraph(
 RnTextProps 
 rn_text_render_paragraph_ex(
     RnState* state, 
-    const char* paragraph,
+    const char* const_paragraph,
     RnFont* font, 
     vec2s pos, 
     RnColor color,
     RnParagraphProps props,
     bool render) {
 
+  char* paragraph_copy = strdup(const_paragraph);  
+  char* paragraph = trimspaces(paragraph_copy);
   RnHarfbuzzText* hb_text = rn_hb_text_from_str(state, *font, paragraph);
 
   if (!hb_text->highest_bearing) {
@@ -1724,9 +1746,10 @@ rn_text_render_paragraph_ex(
 
   uint32_t nwords = hb_text->nwords;
 
-  if (!hb_text->words) {
-    hb_text->words = splitwords(paragraph, &hb_text->nwords);
+  if (!hb_text->words || !nwords) {
+    hb_text->words = splitwords((char*)paragraph, &nwords);
   }
+  hb_text->nwords = nwords;
   if(!nwords) return (RnTextProps){0};
 
   float word_ys[nwords];
@@ -1854,6 +1877,8 @@ rn_text_render_paragraph_ex(
     .height = (nwraps > 0) ? (nwraps * font->line_h + last_line_h) : last_line_h, 
     .paragraph_pos = paragraph_pos
   };
+  
+  free(paragraph_copy);
 }
 
 
