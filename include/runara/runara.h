@@ -7,6 +7,9 @@
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_GLYPH_H
+#include FT_BITMAP_H
+#include FT_COLOR_H
 
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ft.h>
@@ -144,6 +147,8 @@ typedef struct {
   hb_font_t* hb_font;
   // The pixel size of the font
   uint32_t size;
+  // The size of the selected strike for Emoji/Colored fonts 
+  uint32_t selected_strike_size;
   // The ID of the font
   uint32_t id;
   // The with in pixels of a space character 
@@ -1125,6 +1130,8 @@ void rn_image_render_base_types(
     unsigned char color_b, 
     unsigned char color_a, 
     uint32_t tex_id, uint32_t tex_width, uint32_t tex_height);
+
+uint32_t rn_utf8_to_codepoint(const char *text, uint32_t cluster, uint32_t text_length);
 
 /*
  * @brief Renders a given text with a given 

@@ -47,7 +47,8 @@ static void             resize_glyph_cache(RnGlyphCache* cache, size_t new_cap);
 static void             add_glyph_to_cache(RnGlyphCache* cache, RnGlyph glyph);
 static void             free_glyph_cache(RnGlyphCache* cache);
 static RnGlyph*         get_glyph_from_codepoint(RnGlyphCache cache, RnFont font, uint64_t codepoint);
-static RnGlyph          load_glyph_from_codepoint(RnFont* font, uint64_t codepoint);
+static RnGlyph          load_glyph_from_codepoint(RnFont* font, uint64_t codepoint, bool colored);
+static RnGlyph          load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint);
 static RnGlyph          get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, uint64_t codepoint);
 
 static void             init_hb_cache(RnHarfbuzzCache* cache, size_t init_cap);
@@ -251,11 +252,11 @@ renderer_init(RnState* state) {
   glVertexAttribPointer(9, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
                         (void*)(intptr_t*)offsetof(RnVertex, is_text));
   glEnableVertexAttribArray(9);
-  
+
   glVertexAttribPointer(10, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
                         (void*)(intptr_t*)offsetof(RnVertex, min_coord));
   glEnableVertexAttribArray(10);
-  
+
   glVertexAttribPointer(11, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
                         (void*)(intptr_t*)offsetof(RnVertex, max_coord));
   glEnableVertexAttribArray(11);
@@ -334,7 +335,7 @@ renderer_init(RnState* state) {
     "}\n"
     "\n"
     "void main() {\n"
-     "float bias = 0.5; // Small bias to prevent missing pixels\n"
+    "float bias = 0.5; // Small bias to prevent missing pixels\n"
     "\n"
     "if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) {\n"
     "    discard;\n"
@@ -388,7 +389,7 @@ renderer_init(RnState* state) {
     "    edge_softness, distance);\n"
     "\n"
     "float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance)) :\n"
-"                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+    "                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
 
 
     "  float shadow_distance = rounded_box_sdf(\n"
@@ -538,11 +539,205 @@ void free_glyph_cache(RnGlyphCache* cache) {
 RnGlyph* get_glyph_from_codepoint(RnGlyphCache cache, RnFont font, uint64_t codepoint) {
   for(uint32_t i = 0; i < cache.size; i++) {
     if(cache.glyphs[i].codepoint == codepoint
-    && cache.glyphs[i].font_id == font.id) {
+      && cache.glyphs[i].font_id == font.id) {
       return &cache.glyphs[i];
     }
   }
   return NULL;
+}
+
+
+RnGlyph load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
+  RnGlyph glyph = {0};
+
+  FT_UInt glyph_index = codepoint; 
+
+  if (FT_Load_Glyph(font->face, glyph_index, FT_LOAD_COLOR)) {
+    RN_ERROR("Failed to load glyph index '%u'.", glyph_index);
+    return glyph;
+  }
+  FT_GlyphSlot slot = font->face->glyph;
+  if (slot->format == FT_GLYPH_FORMAT_BITMAP && slot->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+    return load_glyph_from_codepoint(font, codepoint, true);
+  }
+
+  FT_LayerIterator layer_iterator = {0};
+  FT_UInt layer_glyph_index;
+  FT_UInt layer_color_index;
+
+  layer_iterator.p = NULL;
+
+  FT_Bool has_layers = FT_Get_Color_Glyph_Layer(
+    font->face,
+    glyph_index,
+    &layer_glyph_index,
+    &layer_color_index,
+    &layer_iterator
+  );
+
+  if (!has_layers) {
+    return load_glyph_from_codepoint(font, codepoint, false);
+  }
+
+  // Select default palette (palette 0)
+  FT_Color* palette = NULL;
+  if (FT_Palette_Select(font->face, 0, &palette)) {
+    palette = NULL; // fallback: no palette
+  }
+
+  int canvas_size = font->selected_strike_size;
+  unsigned char* rgba_data = calloc(canvas_size * canvas_size * 4, 1);
+  if (!rgba_data) {
+    RN_ERROR("Failed to allocate RGBA canvas.");
+    exit(EXIT_FAILURE);
+  }
+
+  int min_x = 9999, min_y = 9999;
+  int max_x = -9999, max_y = -9999;
+
+  FT_LayerIterator measure_iterator = {0};
+  measure_iterator.p = NULL;
+  FT_UInt measure_glyph_index, measure_color_index;
+
+  // Get bounding box 
+  if (FT_Get_Color_Glyph_Layer(font->face, glyph_index, &measure_glyph_index, &measure_color_index, &measure_iterator)) {
+    do {
+      if (FT_Load_Glyph(font->face, measure_glyph_index, FT_LOAD_RENDER)) {
+        continue;
+      }
+
+      FT_GlyphSlot slot = font->face->glyph;
+      if (slot->format != FT_GLYPH_FORMAT_BITMAP)
+        continue;
+
+      int glyph_min_x = slot->bitmap_left;
+      int glyph_min_y = -slot->bitmap_top + slot->bitmap.rows;
+      int glyph_max_x = glyph_min_x + slot->bitmap.width;
+      int glyph_max_y = glyph_min_y + slot->bitmap.rows;
+
+      if (glyph_min_x < min_x) min_x = glyph_min_x;
+      if (glyph_min_y < min_y) min_y = glyph_min_y;
+      if (glyph_max_x > max_x) max_x = glyph_max_x;
+      if (glyph_max_y > max_y) max_y = glyph_max_y;
+
+    } while (FT_Get_Color_Glyph_Layer(font->face, glyph_index, &measure_glyph_index, &measure_color_index, &measure_iterator));
+  }
+
+  if (min_x > max_x || min_y > max_y) {
+    free(rgba_data);
+    RN_ERROR("Invalid bounding box for COLR glyph.");
+    return glyph;
+  }
+
+  int glyph_width = max_x - min_x;
+  int glyph_height = max_y - min_y;
+
+  // Composite layers
+  layer_iterator.p = NULL;
+  if (FT_Get_Color_Glyph_Layer(font->face, glyph_index, &layer_glyph_index, &layer_color_index, &layer_iterator)) {
+    do {
+      if (FT_Load_Glyph(font->face, layer_glyph_index, FT_LOAD_RENDER)) {
+        continue;
+      }
+
+      FT_GlyphSlot slot = font->face->glyph;
+      if (slot->format != FT_GLYPH_FORMAT_BITMAP)
+        continue;
+
+      FT_Color layer_color;
+      if (layer_color_index == 0xFFFF || !palette) {
+        layer_color.red   = 0x00;
+        layer_color.green = 0x00;
+        layer_color.blue  = 0x00;
+        layer_color.alpha = 0xFF;
+      } else {
+        layer_color = palette[layer_color_index];
+      }
+
+      for (int y = 0; y < slot->bitmap.rows; y++) {
+        for (int x = 0; x < slot->bitmap.width; x++) {
+          unsigned char coverage = slot->bitmap.buffer[y * slot->bitmap.pitch + x];
+          if (coverage == 0)
+            continue;
+
+          int dst_x = (slot->bitmap_left + x) - min_x;
+          int dst_y = (glyph_height - (slot->bitmap_top - y)) - min_y;
+
+          if (dst_x < 0 || dst_x >= canvas_size || dst_y < 0 || dst_y >= canvas_size)
+            continue;
+
+          unsigned char* pixel = &rgba_data[(dst_y * canvas_size + dst_x) * 4];
+
+          unsigned char src_r = (layer_color.red   * coverage) >> 8;
+          unsigned char src_g = (layer_color.green * coverage) >> 8;
+          unsigned char src_b = (layer_color.blue  * coverage) >> 8;
+          unsigned char src_a = (layer_color.alpha * coverage) >> 8;
+
+          pixel[0] = src_r;
+          pixel[1] = src_g;
+          pixel[2] = src_b;
+          pixel[3] = src_a;
+        }
+      }
+
+    } while (FT_Get_Color_Glyph_Layer(font->face, glyph_index, &layer_glyph_index, &layer_color_index, &layer_iterator));
+  }
+
+  glBindTexture(GL_TEXTURE_2D, font->atlas_id);
+
+  if (font->atlas_x + glyph_width >= font->atlas_w) {
+    font->atlas_x = 0;
+    font->atlas_y += font->atlas_row_h;
+    font->atlas_row_h = 0;
+  }
+
+  if (font->atlas_y + glyph_height >= font->atlas_h) {
+    RN_ERROR("Font atlas overflow (vertical). Not handled yet.");
+    free(rgba_data);
+    return glyph;
+  }
+
+  glTexSubImage2D(
+    GL_TEXTURE_2D,
+    0,
+    font->atlas_x,
+    font->atlas_y,
+    glyph_width,
+    glyph_height,
+    GL_RGBA,
+    GL_UNSIGNED_BYTE,
+    rgba_data
+  );
+
+  glGenerateMipmap(GL_TEXTURE_2D);
+
+  float scale = 1.0f;
+  if (font->selected_strike_size)
+    scale = ((float)font->size / (float)font->selected_strike_size);
+
+  // Unscaled UVs (stay relative to atlas)
+  glyph.u0 = (float)font->atlas_x / (float)font->atlas_w;
+  glyph.v0 = (float)font->atlas_y / (float)font->atlas_h;
+  glyph.u1 = (float)(font->atlas_x + glyph_width) / (float)font->atlas_w;
+  glyph.v1 = (float)(font->atlas_y + glyph_height) / (float)font->atlas_h;
+
+  glyph.width     = glyph_width * scale;
+  glyph.height    = glyph_height * scale;
+  glyph.bearing_x = min_x * scale;
+  glyph.bearing_y = -min_y * scale;
+  glyph.advance   = (font->face->glyph->advance.x / 64.0f) * scale; // remember divide by 64!
+
+  glyph.font_id = font->id;
+  glyph.codepoint = codepoint;
+
+  font->atlas_x += glyph_width + 1;
+  font->atlas_row_h = (font->atlas_row_h > glyph_height) ? font->atlas_row_h : glyph_height;
+
+  // Cleanup
+  free(rgba_data);
+
+  // Return the glyph
+  return glyph;
 }
 
 /* This function loads a glyph's bitmap from a given glyph index from a font.
@@ -551,10 +746,11 @@ RnGlyph* get_glyph_from_codepoint(RnGlyphCache cache, RnFont font, uint64_t code
 * within the atlas 
 * */
 RnGlyph 
-load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
+load_glyph_from_codepoint(RnFont* font, uint64_t codepoint, bool colored) {
   RnGlyph glyph;
   // Load the glyph with freetype
-  if (FT_Load_Glyph(font->face, codepoint, FT_LOAD_RENDER)) {
+  uint32_t flags = colored ? FT_LOAD_RENDER | FT_LOAD_COLOR : FT_LOAD_RENDER;
+  if (FT_Load_Glyph(font->face, codepoint, flags)) {
     RN_ERROR("Failed to load glyph of character with codepoint '%lu'.", codepoint);
     return glyph;
   }
@@ -564,7 +760,7 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   int32_t width, height;
 
   int bpp = 4; 
-  int padding = 0; 
+  int padding = 1; 
 
   int old_width = slot->bitmap.width;
   int old_height = slot->bitmap.rows;
@@ -582,18 +778,37 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   // Initialize the buffer with transparent color (RGBA = 0, 0, 0, 0)
   memset(rgba_data, 0, width * height * bpp);
 
-  // Copy the glyph bitmap to the center of the RGBA buffer with padding
-  for (int y = 0; y < old_height; y++) {
-    for (int x = 0; x < old_width; x++) {
-      unsigned char* src_pixel = &slot->bitmap.buffer[y * slot->bitmap.pitch + x];
-      unsigned char* dst_pixel = &rgba_data[((y + padding) * width + (x + padding)) * bpp];
-      unsigned char gray = *src_pixel;
-      // Set every pixel of the RGBA buffer to the grayscale value
-      dst_pixel[0] = gray; // R
-      dst_pixel[1] = gray; // G
-      dst_pixel[2] = gray; // B
-      dst_pixel[3] = gray; // A
+  if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY || !colored) {
+    // Grayscale glyph (normal text)
+    for (int y = 0; y < old_height; y++) {
+      for (int x = 0; x < old_width; x++) {
+        unsigned char* src_pixel = &slot->bitmap.buffer[y * slot->bitmap.pitch + x];
+        unsigned char* dst_pixel = &rgba_data[((y + padding) * width + (x + padding)) * bpp];
+        unsigned char gray = *src_pixel;
+
+        dst_pixel[0] = gray;    // R
+        dst_pixel[1] = gray;    // G
+        dst_pixel[2] = gray;    // B
+        dst_pixel[3] = gray;   // A (coverage)
+      }
     }
+  }
+  else if (slot->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+    // Color bitmap glyph (emoji)
+    for (int y = 0; y < old_height; y++) {
+      for (int x = 0; x < old_width; x++) {
+        unsigned char* src_pixel = &slot->bitmap.buffer[(y * slot->bitmap.pitch) + (x * 4)];
+        unsigned char* dst_pixel = &rgba_data[((y + padding) * width + (x + padding)) * bpp];
+
+        dst_pixel[0] = src_pixel[2]; // R
+        dst_pixel[1] = src_pixel[1]; // G
+        dst_pixel[2] = src_pixel[0]; // B
+        dst_pixel[3] = src_pixel[3]; // A
+      }
+    }
+  }
+  else {
+    RN_ERROR("Unsupported pixel mode: %d", slot->bitmap.pixel_mode);
   }
 
   // When the atlas overflows on the X, advance 
@@ -669,27 +884,35 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   glGenerateMipmap(GL_TEXTURE_2D);
   /* Set glyph attributes */
 
-  glyph.width = slot->bitmap.width;
-  glyph.height = slot->bitmap.rows;
-  glyph.bearing_x = slot->bitmap_left;
-  glyph.bearing_y = slot->bitmap_top;
-  glyph.advance = slot->advance.x;
-  glyph.ascender = slot->metrics.horiBearingY >> 6;
-  glyph.descender = (slot->metrics.height >> 6) - glyph.ascender;
-  glyph.descender = (slot->metrics.horiBearingY - slot->metrics.height) / 64;
+  float scale = 1.0f;
+  if (font->selected_strike_size)
+    scale = ((float)font->size / (float)font->selected_strike_size);
 
+  glyph.width     = slot->bitmap.width * scale;
+  glyph.height    = slot->bitmap.rows * scale;
+  glyph.bearing_x = slot->bitmap_left * scale;
+  glyph.bearing_y = slot->bitmap_top * scale;
+  glyph.advance   = (slot->advance.x / 64.0f) * scale;
+  glyph.ascender  = (slot->metrics.horiBearingY >> 6) * scale;
+  glyph.descender = ((slot->metrics.horiBearingY - slot->metrics.height) / 64.0f) * scale;
 
   glyph.codepoint = codepoint;
   glyph.font_id = font->id;
 
-  // Adjust texture coordinates to account for padding
-  glyph.u0 = (int)(font->atlas_x + padding) / (float)font->atlas_w;
-  glyph.v0 = (int)(font->atlas_y + padding) / (float)font->atlas_h;
-  glyph.u1 = (int)(font->atlas_x + width) / (float)font->atlas_w;
-  glyph.v1 = (int)(font->atlas_y + height + 1) / (float)font->atlas_h;
+  glyph.u0 = (float)(font->atlas_x + padding) / (float)font->atlas_w;
+  glyph.v0 = (float)(font->atlas_y + padding) / (float)font->atlas_h;
+  glyph.u1 = (float)(font->atlas_x + width)   / (float)font->atlas_w;
+  glyph.v1 = (float)(font->atlas_y + height + 1) / (float)font->atlas_h;
 
   font->atlas_x += width + 1;
   font->atlas_row_h = (font->atlas_row_h > height) ? font->atlas_row_h : height;
+
+  // Cleanup
+  free(rgba_data);
+
+  // Return final glyph
+  return glyph;
+
 
   // Free allocated memory
   free(rgba_data);
@@ -704,7 +927,7 @@ RnGlyph get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, uint64_t codepoi
     return *glyph;
   }
 
-  RnGlyph new_glyph = load_glyph_from_codepoint(font, codepoint);
+  RnGlyph new_glyph = load_colr_glyph_from_codepoint(font, codepoint);
   add_glyph_to_cache(cache, new_glyph);
   return new_glyph; 
 }
@@ -852,7 +1075,7 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
     RN_ERROR("Failed to initialize FreeType.");
     return state;
   }
-  
+
   init_glyph_cache(&state->glyph_cache, 32);
   init_hb_cache(&state->hb_cache, 32);
 
@@ -928,7 +1151,7 @@ rn_load_texture_base_types(
   glGenerateMipmap(GL_TEXTURE_2D);
   // Free image data CPU side 
   stbi_image_free(image); 
-  
+
   *o_tex_width = width;
   *o_tex_height = height;
 
@@ -969,7 +1192,7 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
   glGenerateMipmap(GL_TEXTURE_2D);
   // Free image data CPU side 
   stbi_image_free(image); 
-  
+
   // Set texture dimensions
   tex.width = width;
   tex.height = height;
@@ -977,8 +1200,8 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
 }
 
 RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
-                       uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w,
-                       RnTextureFiltering filter_mode, uint32_t face_idx) {
+                        uint32_t atlas_w, uint32_t atlas_h, uint32_t tab_w,
+                        RnTextureFiltering filter_mode, uint32_t face_idx) {
   RnFont* font = malloc(sizeof(*font));
   FT_Face face;
 
@@ -989,10 +1212,39 @@ RnFont* rn_load_font_ex(RnState* state, const char* filepath, uint32_t size,
     RN_ERROR("Failed to load font file '%s'.", filepath);
     return NULL;
   }
+  if (FT_Select_Charmap(face, FT_ENCODING_UNICODE)) {
+    // fallback: find any Unicode-compatible charmap
+    for (int i = 0; i < face->num_charmaps; i++) {
+      if (face->charmaps[i]->encoding == FT_ENCODING_UNICODE) {
+        FT_Set_Charmap(face, face->charmaps[i]);
+        break;
+      }
+    }
+  }
 
-  // Set the pixel size of the font
-  FT_Set_Pixel_Sizes(face, 0, size);
+  if (face->num_fixed_sizes > 0) {
+    // Select the closest strike available
+    int best_match = 0;
+    int best_diff = abs((int32_t)(face->available_sizes[0].height - size));
 
+    for (int i = 1; i < face->num_fixed_sizes; i++) {
+      int diff = abs((int32_t)(face->available_sizes[i].height - size));
+      if (diff < best_diff) {
+        best_match = i;
+        best_diff = diff;
+      }
+    }
+
+    if (FT_Select_Size(face, best_match)) {
+      RN_ERROR("Failed to select bitmap strike.");
+      return NULL;
+    }
+    font->selected_strike_size = face->available_sizes[best_match].height;
+  } else {
+    // No fixed sizes (normal vector font), fallback to pixel size
+    FT_Set_Pixel_Sizes(face, 0, size);
+    font->selected_strike_size = 0; 
+  }
   font->face = face;
   font->size = size;
 
@@ -1074,15 +1326,15 @@ rn_create_font_from_loaded_data_ex(RnState* state, FT_Face face, hb_font_t* hb_f
 
 RnFont* 
 rn_create_font_from_loaded_data(RnState* state, FT_Face face, hb_font_t* hb_font, float space_w,
-                                        uint32_t size, 
-                                        uint32_t face_idx, const char* filepath) {
+                                uint32_t size, 
+                                uint32_t face_idx, const char* filepath) {
   return rn_create_font_from_loaded_data_ex(state, face, hb_font, size, 1024, 1024, 4, RN_TEX_FILTER_LINEAR, face_idx, filepath, space_w);
 }
 
 RnFont* 
 rn_load_font(RnState* state, const char* filepath, uint32_t size) {
   return rn_load_font_ex(state, filepath, size, 
-                         1024, 1024, 4, RN_TEX_FILTER_NEAREST, 0);
+                         1024, 1024, 4, RN_TEX_FILTER_LINEAR, 0);
 }
 
 RnFont* 
@@ -1094,7 +1346,7 @@ rn_load_font_from_face(RnState* state, const char* filepath, uint32_t size, uint
 void 
 rn_set_font_size(RnState* state, RnFont* font, uint32_t size) {
   if(font->size == size) return;
-  
+
   // Set size of the font
   font->size = size;
 
@@ -1108,7 +1360,7 @@ rn_set_font_size(RnState* state, RnFont* font, uint32_t size) {
   // Reload the glyph & harfbuzz cache
   rn_reload_font_harfbuzz_cache(state, *font);
   rn_reload_font_glyph_cache(state, font);
-  
+
   font->space_w = rn_text_props(state, " ", font).width;
   font->line_h = font->face->size->metrics.height / 64.0f;
 } 
@@ -1154,10 +1406,10 @@ rn_end_scissor(void) {
 
 void 
 rn_clear_color_base_types(
-    unsigned char r, 
-    unsigned char g, 
-    unsigned char b, 
-    unsigned char a) {
+  unsigned char r, 
+  unsigned char g, 
+  unsigned char b, 
+  unsigned char a) {
   RnColor color = (RnColor){r, g, b, a};
   vec4s zto = rn_color_to_zto(color);
   glClearColor(zto.r, zto.g, zto.b, zto.a);
@@ -1329,7 +1581,7 @@ rn_reload_font_glyph_cache(RnState* state, RnFont* font) {
   for(uint32_t i = 0; i < state->glyph_cache.size; i++) {
     RnGlyph* glyph = &state->glyph_cache.glyphs[i];
     if(glyph->font_id == font->id) {
-      *glyph = load_glyph_from_codepoint(font, glyph->codepoint);
+      *glyph = load_colr_glyph_from_codepoint(font, glyph->codepoint);
     }
   }
 }
@@ -1502,9 +1754,36 @@ void rn_image_render_base_types(
   uint32_t tex_id, uint32_t tex_width, uint32_t tex_height) {
 
   rn_image_render_ex(state, (vec2s){posx, posy}, rotation_angle, 
-                  (RnColor){color_r, color_g, color_b, color_a},
-                  (RnTexture){.id = tex_id, .width = tex_width, .height = tex_height},
-                  RN_NO_COLOR,0.0f,0.0f);
+                     (RnColor){color_r, color_g, color_b, color_a},
+                     (RnTexture){.id = tex_id, .width = tex_width, .height = tex_height},
+                     RN_NO_COLOR,0.0f,0.0f);
+}
+
+
+uint32_t rn_utf8_to_codepoint(const char *text, uint32_t cluster, uint32_t text_length) {
+  uint32_t codepoint = 0;
+  uint8_t c = text[cluster];
+
+  if (c < 0x80) {
+    // 1-byte UTF-8
+    codepoint = c;
+  } else if ((c & 0xE0) == 0xC0 && (cluster + 1) < text_length) {
+    // 2-byte UTF-8
+    codepoint = ((c & 0x1F) << 6) | (text[cluster + 1] & 0x3F);
+  } else if ((c & 0xF0) == 0xE0 && (cluster + 2) < text_length) {
+    // 3-byte UTF-8
+    codepoint = ((c & 0x0F) << 12) |
+      ((text[cluster + 1] & 0x3F) << 6) |
+      (text[cluster + 2] & 0x3F);
+  } else if ((c & 0xF8) == 0xF0 && (cluster + 3) < text_length) {
+    // 4-byte UTF-8
+    codepoint = ((c & 0x07) << 18) |
+      ((text[cluster + 1] & 0x3F) << 12) |
+      ((text[cluster + 2] & 0x3F) << 6) |
+      (text[cluster + 3] & 0x3F);
+  }
+
+  return codepoint;
 }
 
 
@@ -1545,14 +1824,17 @@ RnTextProps rn_text_render_ex(RnState* state,
 
   float textheight = 0;
 
+    float scale = 1.0f;
+    if (font->selected_strike_size)
+      scale = ((float)font->size / (float)font->selected_strike_size);
   for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
       state, font,
       hb_text->glyph_info[i].codepoint); 
 
-    // Get the unicode codepoint of the currently iterated glyph
-    char codepoint = text[hb_text->glyph_info[i].cluster];
+    uint32_t text_length = strlen(text);
+    uint32_t codepoint = rn_utf8_to_codepoint(text, hb_text->glyph_info[i].cluster, text_length);
     // Check if the unicode codepoint is a new line and advance 
     // to the next line if so
     if(codepoint == line_feed || codepoint == carriage_return ||
@@ -1575,12 +1857,11 @@ RnTextProps rn_text_render_ex(RnState* state,
     if(!hb_text->glyph_info[i].codepoint) {
       continue;
     }
+    float x_advance = (hb_text->glyph_pos[i].x_advance / 64.0f) * scale;
+    float y_advance = (hb_text->glyph_pos[i].y_advance / 64.0f) * scale;
+    float x_offset  = (hb_text->glyph_pos[i].x_offset / 64.0f) * scale;
+    float y_offset  = (hb_text->glyph_pos[i].y_offset / 64.0f) * scale;
 
-    // Calculate position
-    float x_advance = hb_text->glyph_pos[i].x_advance / 64.0f; 
-    float y_advance = hb_text->glyph_pos[i].y_advance / 64.0f;
-    float x_offset = hb_text->glyph_pos[i].x_offset / 64.0f;
-    float y_offset = hb_text->glyph_pos[i].y_offset / 64.0f;
 
     vec2s glyph_pos = {
       pos.x + x_offset,
@@ -1597,7 +1878,7 @@ RnTextProps rn_text_render_ex(RnState* state,
     }
 
     // Advance to the next glyph
-    pos.x += x_advance;
+    pos.x += x_advance; 
     pos.y += y_advance;
   }
 
@@ -1634,7 +1915,7 @@ RnWord* splitwords(const char* input, uint32_t* word_count) {
   size_t input_len = strlen(input);
   *word_count = 0;
   bool in_word = false;
- 
+
   for (size_t i = 0; i <= input_len; i++) {
     if (isspace(input[i]) || input[i] == '\0') {
       if (in_word) {
@@ -1704,12 +1985,12 @@ RnWord* splitwords(const char* input, uint32_t* word_count) {
 }
 
 RnTextProps rn_text_render_paragraph(
-    RnState* state, 
-    const char* paragraph,
-    RnFont* font, 
-    vec2s pos, 
-    RnColor color,
-    RnParagraphProps props) {
+  RnState* state, 
+  const char* paragraph,
+  RnFont* font, 
+  vec2s pos, 
+  RnColor color,
+  RnParagraphProps props) {
   return rn_text_render_paragraph_ex(
     state, 
     paragraph, 
@@ -1722,13 +2003,13 @@ RnTextProps rn_text_render_paragraph(
 
 RnTextProps 
 rn_text_render_paragraph_ex(
-    RnState* state, 
-    const char* const_paragraph,
-    RnFont* font, 
-    vec2s pos, 
-    RnColor color,
-    RnParagraphProps props,
-    bool render) {
+  RnState* state, 
+  const char* const_paragraph,
+  RnFont* font, 
+  vec2s pos, 
+  RnColor color,
+  RnParagraphProps props,
+  bool render) {
 
   char* paragraph_copy = strdup(const_paragraph);  
   char* paragraph = trimspaces(paragraph_copy);
@@ -1877,7 +2158,7 @@ rn_text_render_paragraph_ex(
     .height = (nwraps > 0) ? (nwraps * font->line_h + last_line_h) : last_line_h, 
     .paragraph_pos = paragraph_pos
   };
-  
+
   free(paragraph_copy);
 }
 
@@ -1901,8 +2182,8 @@ void rn_glyph_render(
 
   RnTexture tex = (RnTexture){
     .id = font.atlas_id,
-    .width = glyph.width, 
-    .height = glyph.height
+    .width = glyph.width,
+    .height = glyph.height 
   };
 
   rn_image_render_adv(state, (vec2s){xpos, ypos}, 0.0f,
@@ -1968,16 +2249,16 @@ RnTextProps rn_text_render(
 }
 
 RnTextProps rn_text_render_base_types(
-    RnState* state, 
-    const char* text,
-    RnFont* font, 
-    float pos_x,
-    float pos_y,
-    unsigned char color_r, 
-    unsigned char color_g, 
-    unsigned char color_b, 
-    unsigned char color_a
-    ) {
+  RnState* state, 
+  const char* text,
+  RnFont* font, 
+  float pos_x,
+  float pos_y,
+  unsigned char color_r, 
+  unsigned char color_g, 
+  unsigned char color_b, 
+  unsigned char color_a
+) {
   return rn_text_render_ex(
     state, text, font, 
     (vec2s){pos_x, pos_y},
@@ -1996,29 +2277,29 @@ RnTextProps rn_text_props(
 
 RnTextProps 
 rn_text_props_paragraph(
-    RnState* state, 
-    const char* text, 
-    vec2s pos,
-    RnFont* font,
-    RnParagraphProps props
-    ) {
+  RnState* state, 
+  const char* text, 
+  vec2s pos,
+  RnFont* font,
+  RnParagraphProps props
+) {
   return rn_text_render_paragraph_ex(state, text, font, pos, 
-                           RN_NO_COLOR, props, false);
+                                     RN_NO_COLOR, props, false);
 }
 
 float rn_text_width(
-    RnState* state, 
-    const char* text, 
-    RnFont* font
-    ) {
+  RnState* state, 
+  const char* text, 
+  RnFont* font
+) {
   return rn_text_props(state, text, font).width;
 }
 
 float rn_text_height(
-    RnState* state, 
-    const char* text, 
-    RnFont* font
-    ) {
+  RnState* state, 
+  const char* text, 
+  RnFont* font
+) {
   return rn_text_props(state, text, font).height;
 }
 

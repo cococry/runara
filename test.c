@@ -22,8 +22,8 @@ int main() {
   state = rn_init(1280, 720, (RnGLLoader)glfwGetProcAddress);
 
   // Loading some fonts
-  RnFont *heading = rn_load_font_ex(state, "/usr/share/fonts/TTF/VictorMonoNerdFont-Regular.ttf", 36, 1024, 1024, 4, RN_TEX_FILTER_LINEAR,0 );
-  RnFont *paragraph = rn_load_font_ex(state, "/usr/share/fonts/TTF/VictorMonoNerdFont-Regular.ttf", 24, 1024, 1024, 4, RN_TEX_FILTER_LINEAR,0 );
+  RnFont *heading = rn_load_font(state, "/usr/share/fonts/noto/NotoColorEmoji.ttf", 48);
+  RnFont *heading2 = rn_load_font(state, "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf", 48); 
 
   while(!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
@@ -33,13 +33,9 @@ int main() {
     rn_begin(state);
 
     // Rendering some text with one font
-    rn_text_render(state, "Hello, runara!", heading, (vec2s){20, 20}, RN_WHITE);
+    rn_text_render(state, "🌟🦉🎯🛸🍀🎸🐍🚀🌊🧠🍉🔥🎲🖤🦖", heading, (vec2s){20, 20}, RN_WHITE);
+    rn_text_render(state, "fuckin ass emojis letsgo", heading2, (vec2s){20, 100}, RN_WHITE);
 
-    // Render some text with another font
-    rn_text_render(state, "Hey There!\nThis is a paragraph.", paragraph, (vec2s){20, 70}, RN_WHITE);
-
-    // Rendering a basic rectangle
-    rn_rect_render_ex(state, (vec2s){20, 130}, (vec2s){200, 100}, 0, RN_RED, RN_NO_COLOR, 0, 10);
 
     // Ending the render pass
     rn_end(state);
@@ -51,6 +47,5 @@ int main() {
     glfwSwapBuffers(window);
   }
   rn_free_font(state, heading);
-  rn_free_font(state, paragraph);
   rn_terminate(state);
 }
