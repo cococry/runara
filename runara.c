@@ -723,6 +723,8 @@ RnGlyph load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
 
   glyph.width     = glyph_width * scale;
   glyph.height    = glyph_height * scale;
+  glyph.glyph_top = (float)slot->bitmap_top;
+  glyph.glyph_bottom = (float)((int)slot->bitmap_top - (int)slot->bitmap.rows);
   glyph.bearing_x = min_x * scale;
   glyph.bearing_y = -min_y * scale;
   glyph.advance   = (font->face->glyph->advance.x / 64.0f) * scale; // remember divide by 64!
@@ -890,6 +892,8 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint, bool colored) {
 
   glyph.width     = slot->bitmap.width * scale;
   glyph.height    = slot->bitmap.rows * scale;
+  glyph.glyph_top = (float)slot->bitmap_top;
+  glyph.glyph_bottom = (float)((int)slot->bitmap_top - (int)slot->bitmap.rows);
   glyph.bearing_x = slot->bitmap_left * scale;
   glyph.bearing_y = slot->bitmap_top * scale;
   glyph.advance   = (slot->advance.x / 64.0f) * scale;

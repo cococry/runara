@@ -201,6 +201,8 @@ typedef struct {
   uint32_t width;
   // The height of the glyphs texture
   uint32_t height;
+  float glyph_top;
+  float glyph_bottom;
   // The horizontal offset of the glyph's origin from the
   // font's x-axis.
   int32_t bearing_x; 
