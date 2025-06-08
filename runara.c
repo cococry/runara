@@ -719,7 +719,7 @@ RnGlyph load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   glyph.u0 = (float)font->atlas_x / (float)font->atlas_w;
   glyph.v0 = (float)font->atlas_y / (float)font->atlas_h;
   glyph.u1 = (float)(font->atlas_x + glyph_width) / (float)font->atlas_w;
-  glyph.v1 = (float)(font->atlas_y + glyph_height) / (float)font->atlas_h;
+  glyph.v1 = (float)(font->atlas_y + glyph_height - 1) / (float)font->atlas_h;
 
   glyph.width     = glyph_width * scale;
   glyph.height    = glyph_height * scale;
@@ -906,7 +906,7 @@ load_glyph_from_codepoint(RnFont* font, uint64_t codepoint, bool colored) {
   glyph.u0 = (float)(font->atlas_x + padding) / (float)font->atlas_w;
   glyph.v0 = (float)(font->atlas_y + padding) / (float)font->atlas_h;
   glyph.u1 = (float)(font->atlas_x + width)   / (float)font->atlas_w;
-  glyph.v1 = (float)(font->atlas_y + height + 1) / (float)font->atlas_h;
+  glyph.v1 = (float)(font->atlas_y + height) / (float)font->atlas_h;
 
   font->atlas_x += width + 1;
   font->atlas_row_h = (font->atlas_row_h > height) ? font->atlas_row_h : height;

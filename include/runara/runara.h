@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <cglm/cglm.h>
 #include <cglm/struct.h>
-#include <libclipboard.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
