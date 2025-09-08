@@ -114,6 +114,65 @@ typedef struct {
   float width;
 } RnWord;
 
+typedef enum {
+  RN_SEGMENT_TYPE_LINE = 0,
+  RN_SEGMENT_TYPE_QUAD, 
+  RN_SEGMENT_TYPE_CUBIC, 
+  RN_SEGMENT_TYPE_ARC, 
+} RnSegmentType;
+
+typedef struct RnSegment {
+  // Defines the type of the segment (use RN_SEGMENT_**)
+  RnSegmentType type;
+  // Coords of P0
+  float x0, y0;
+  // Coords of P1
+  float x1, y1; 
+  // Coords of P2
+  float x2, y2; 
+  // Coords of P3
+  float x3, y3;
+  uint32_t flags;
+
+  uint32_t _pad;  
+} RnSegment; 
+
+
+typedef struct RnPathHeader {
+  // Absolute index into RnVectorState.seg_cpu[]
+  uint32_t start;
+  // Number of segments in path
+  uint32_t count; 
+  // Index into RnVectorState.paint_cpu[]
+  uint32_t paintFill;
+  // index into RnVectorState.paint_cpu[]
+  uint32_t paintStroke;
+  // The width with which the path should be stroked 
+  float strokeWidth;
+  float miter_limit;
+  // Determine how paths should be filled: 0 even-odd, 1 nonzero
+  uint32_t fill_rule;
+
+
+  uint32_t _pad0; 
+} RnPathHeader; 
+
+typedef struct RnPaint {
+  uint32_t type;
+  uint32_t _pad0[3]; 
+
+  float color[4]; 
+
+  float p0x, p0y;
+  float p1x, p1y;
+  float scaleX, scaleY;
+  float repeatX, repeatY;
+
+  int32_t texIndex;   
+  int32_t _pad1[3]; 
+} RnPaint;
+
+_Static_assert(sizeof(RnPaint) == 80, "RnPaint must be 80 bytes for std430");
 /**
  * @struct RnTexture 
  * @brief Represents a renderable texture object  
@@ -317,7 +376,24 @@ typedef struct {
   // Specifies the ending position from where to cull the 
   // shape that contains the vertex 
   vec2 max_coord;
-} RnVertex; // 92 Bytes per vertex
+  uint32_t path_id;
+} RnVertex; // 96 Bytes per vertex
+
+typedef struct {
+  uint32_t seg_ssbo, path_ssbo, paint_ssbo;
+
+  RnSegment*   seg_cpu;
+  uint32_t     seg_cpu_cap;
+  uint32_t     seg_cpu_len;
+
+  RnPathHeader* path_cpu;
+  uint32_t      path_cpu_cap;
+  uint32_t      path_cpu_len;
+
+  RnPaint*     paint_cpu;
+  uint32_t     paint_cpu_cap;
+  uint32_t     paint_cpu_len;
+} RnVectorState;
 
 /**
  * @struct RnRenderState 
@@ -363,6 +439,8 @@ typedef struct {
   // The number of indices within the 
   // current batch
   uint32_t index_count;
+
+  RnVectorState vec;
 } RnRenderState;
 
 /**

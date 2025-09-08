@@ -63,6 +63,50 @@ static uint64_t         djb2_hash(const unsigned char *str);
 
 // --- Static Functions ---
 
+static void vec_reserve_segments(RnVectorState* vb, uint32_t needed) {
+  if (vb->seg_cpu_len + needed > vb->seg_cpu_cap) {
+    vb->seg_cpu_cap = (vb->seg_cpu_len + needed) * 2;
+    vb->seg_cpu = (RnSegment*)realloc(vb->seg_cpu, vb->seg_cpu_cap * sizeof(RnSegment));
+  }
+}
+static void vec_reserve_paths(RnVectorState* vb, uint32_t needed) {
+  if (vb->path_cpu_len + needed > vb->path_cpu_cap) {
+    vb->path_cpu_cap = (vb->path_cpu_len + needed) * 2;
+    vb->path_cpu = (RnPathHeader*)realloc(vb->path_cpu, vb->path_cpu_cap * sizeof(RnPathHeader));
+  }
+}
+static void vec_reserve_paints(RnVectorState* vb, uint32_t needed) {
+  if (vb->paint_cpu_len + needed > vb->paint_cpu_cap) {
+    vb->paint_cpu_cap = (vb->paint_cpu_len + needed) * 2;
+    vb->paint_cpu = (RnPaint*)realloc(vb->paint_cpu, vb->paint_cpu_cap * sizeof(RnPaint));
+  }
+}
+
+static void sync_gpu_ssbo(uint32_t id, const void* data, GLsizeiptr len, uint32_t bytesize) {
+  size_t bytes = len * bytesize; 
+  if (bytes > 0) {
+    GLint64 gpu_size = 0;
+    glGetNamedBufferParameteri64v(id, GL_BUFFER_SIZE, &gpu_size);
+    if (gpu_size < bytes) {
+      glNamedBufferData(id, bytes, NULL, GL_DYNAMIC_DRAW);
+    }
+    glNamedBufferSubData(id, 0, bytes, data);
+  }
+}
+
+static void vec_sync_bufs(RnState* state) {
+  RnVectorState* vs = &state->render.vec;
+
+  sync_gpu_ssbo(vs->seg_ssbo, vs->seg_cpu, vs->seg_cpu_len, sizeof(RnSegment));
+  sync_gpu_ssbo(vs->path_ssbo, vs->path_cpu, vs->path_cpu_len, sizeof(RnPathHeader)); 
+  sync_gpu_ssbo(vs->paint_ssbo, vs->paint_cpu, vs->paint_cpu_len, sizeof(RnPaint)); 
+
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, vs->seg_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, vs->path_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, vs->paint_ssbo);
+}
+
+
 /* This function creates an OpenGL shader unit */
 uint32_t 
 shader_create(GLenum type, const char* src) {
@@ -136,23 +180,50 @@ shader_set_mat(RnShader prg, const char* name, mat4 mat) {
  * */
 void
 set_projection_matrix(RnState* state) {
-
-  // The dimensions of the matrix
-  float left = 0.0f;
-  float top = 0.0f;
-  float right = (float)state->render_w;
-  float bottom = (float)state->render_h;
-
-  // Create the orthographic projection matrix
   mat4 orthoMatrix = GLM_MAT4_IDENTITY_INIT;
-  orthoMatrix[0][0] = 2.0f / (right - left);
-  orthoMatrix[1][1] = 2.0f / (top - bottom);
-  orthoMatrix[2][2] = -1;
-  orthoMatrix[3][0] = -(right + left) / (right - left);
-  orthoMatrix[3][1] = -(top + bottom) / (top - bottom);
+  glm_ortho(0.0f, (float)state->render_w,
+          (float)state->render_h, 0.0f, 
+          -1.0f, 1.0f,
+          orthoMatrix);
 
   // Upload the matrix to the shader
   shader_set_mat(state->render.shader, "u_proj", orthoMatrix);
+}
+
+void 
+init_vector_rendering(RnState* state) {
+  glCreateBuffers(1, &state->render.vec.seg_ssbo);
+  glCreateBuffers(1, &state->render.vec.path_ssbo);
+  glCreateBuffers(1, &state->render.vec.paint_ssbo);
+
+  GLsizeiptr seg_bytes   = 1024 * sizeof(RnSegment);
+  GLsizeiptr path_bytes  = 256  * sizeof(RnPathHeader);
+  GLsizeiptr paint_bytes = 64   * sizeof(RnPaint);
+
+  glNamedBufferData(state->render.vec.seg_ssbo,   seg_bytes,   NULL, GL_DYNAMIC_DRAW);
+  glNamedBufferData(state->render.vec.path_ssbo,  path_bytes,  NULL, GL_DYNAMIC_DRAW);
+  glNamedBufferData(state->render.vec.paint_ssbo, paint_bytes, NULL, GL_DYNAMIC_DRAW);
+
+  // Bind points we’ll use in shaders: 0=Segments, 1=Paths, 2=Paints
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, state->render.vec.seg_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, state->render.vec.path_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, state->render.vec.paint_ssbo);
+
+  // CPU staging init
+  state->render.vec.seg_cpu_cap   = 1024;
+  state->render.vec.seg_cpu_len   = 0;
+  state->render.vec.seg_cpu       = (RnSegment*) malloc(seg_bytes);
+
+  state->render.vec.path_cpu_cap  = 256;
+  state->render.vec.path_cpu_len  = 0;
+  state->render.vec.path_cpu      = (RnPathHeader*) malloc(path_bytes);
+
+  state->render.vec.paint_cpu_cap = 64;
+  state->render.vec.paint_cpu_len = 0;
+  state->render.vec.paint_cpu     = (RnPaint*) malloc(paint_bytes);
+
+  printf("Init.\n");
+
 }
 
 /* This function sets up OpenGL buffer object and shaders 
@@ -261,6 +332,13 @@ renderer_init(RnState* state) {
                         (void*)(intptr_t*)offsetof(RnVertex, max_coord));
   glEnableVertexAttribArray(11);
 
+glVertexAttribIPointer(12, 1, GL_UNSIGNED_INT, sizeof(RnVertex),
+                       (void*)(intptr_t)offsetof(RnVertex, path_id));
+
+glEnableVertexAttribArray(12);
+
+  init_vector_rendering(state);
+
   /* Shader source code*/
 
   // Vertex shader
@@ -278,6 +356,7 @@ renderer_init(RnState* state) {
     "layout (location = 9) in float a_is_text;\n"
     "layout (location = 10) in vec2 a_min_coord;\n"
     "layout (location = 11) in vec2 a_max_coord;\n"
+    "layout (location = 12) in uint a_path_id;\n"
 
     "uniform mat4 u_proj;\n"
     "out vec4 v_border_color;\n"
@@ -289,6 +368,7 @@ renderer_init(RnState* state) {
     "flat out vec2 v_pos_px;\n"
     "flat out float v_corner_radius;\n"
     "flat out float v_is_text;\n"
+    "flat out uint v_path_id;\n"
     "out vec2 v_min_coord;\n"
     "out vec2 v_max_coord;\n"
 
@@ -302,14 +382,53 @@ renderer_init(RnState* state) {
     "v_pos_px = a_pos_px;\n"
     "v_corner_radius = a_corner_radius;\n"
     "v_is_text = a_is_text;\n"
+    "v_path_id = a_path_id;\n"
     "v_min_coord = a_min_coord;\n"
     "v_max_coord = a_max_coord;\n"
     "gl_Position = u_proj * vec4(a_pos.x, a_pos.y, 0.0f, 1.0);\n"
     "}\n";
 
 
-  const char* frag_src = 
+  const char* frag_src =
     "#version 460 core\n"
+    "\n"
+    // ===== SSBOs =====
+    "struct Segment {\n"
+    "    uint  type;\n"
+    "    float x0, y0;\n"
+    "    float x1, y1;\n"
+    "    float x2, y2;\n"
+    "    float x3, y3;\n"
+    "    uint  flags;\n"
+    "    uint  _pad;\n"
+    "};\n"
+    "layout(std430, binding = 0) readonly buffer SegBuf { Segment gSegments[]; };\n"
+    "\n"
+    "struct PathHeader {\n"
+    "    uint  start;\n"
+    "    uint  count;\n"
+    "    uint  paint_fill;\n"
+    "    uint  paint_stroke;\n"
+    "    float stroke_width;\n"
+    "    float miter_limit;\n"
+    "    uint  fill_rule;\n"
+    "    uint  _pad0;\n"
+    "};\n"
+    "layout(std430, binding = 1) readonly buffer PathBuf { PathHeader gPaths[]; };\n"
+    "\n"
+    "struct Paint {\n"
+    "    uint  type;\n"
+    "    vec4  color;\n"
+    "    vec2  p0;\n"
+    "    vec2  p1;\n"
+    "    vec2  scale;\n"
+    "    vec2  repeat;\n"
+    "    int   tex_index;\n"
+    "    int   _pad1;\n"
+    "};\n"
+    "layout(std430, binding = 2) readonly buffer PaintBuf { Paint gPaints[]; };\n"
+    "\n"
+    // ===== IO =====
     "out vec4 o_color;\n"
     "\n"
     "in vec4 v_color;\n"
@@ -321,100 +440,119 @@ renderer_init(RnState* state) {
     "flat in vec2 v_pos_px;\n"
     "flat in float v_corner_radius;\n"
     "flat in float v_is_text;\n"
-    "uniform sampler2D u_textures[32];\n"
-    "uniform vec2 u_screen_size;\n"
     "in vec2 v_min_coord;\n"
     "in vec2 v_max_coord;\n"
+    "flat in uint  v_path_id;\n"
+    "\n"
+    "uniform sampler2D u_textures[32];\n"
+    "uniform vec2 u_screen_size;\n"
     "\n"
     "float rounded_box_sdf(vec2 center_pos, vec2 size, vec4 radius) {\n"
     "  radius.xy = (center_pos.x > 0.0) ? radius.xy : radius.zw;\n"
-    "  radius.x = (center_pos.x > 0.0) ? radius.x : radius.y;\n"
-    "\n"
+    "  radius.x  = (center_pos.x > 0.0) ? radius.x  : radius.y;\n"
     "  vec2 q = abs(center_pos) - size + radius.x;\n"
     "  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius.x;\n"
     "}\n"
     "\n"
-    "void main() {\n"
-    "float bias = 0.5; // Small bias to prevent missing pixels\n"
-    "\n"
-    "if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) {\n"
-    "    discard;\n"
+    "float distsq_line_segment(vec2 p, vec2 a, vec2 b) {\n"
+    "   vec2 ab = b - a;\n"
+    "   float intersect_norm = clamp(dot(p - a, ab) / max(dot(ab,ab), 1e-6), 0.0, 1.0);\n"
+    "   vec2 intersect_point = a + (intersect_norm * ab);\n"
+    "   vec2 dist = p - intersect_point;\n" 
+    "   return dot(dist, dist);\n"
     "}\n"
-    "if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) {\n"
-    "    discard;\n"
+    "\n"
+    "void accumulate_crossing_line(in vec2 p, in vec2 a, in vec2 b, inout int evenoddintersect, inout int winding){\n"
+    "  bool crossingup = (a.y <= p.y) && (b.y >  p.y);\n"
+    "  bool crossingdown = (b.y <= p.y) && (a.y >  p.y);\n"
+    "  if (crossingup || crossingdown) {\n"
+    "    float intersect_norm = clamp((p.y - a.y) / (b.y - a.y), 0.0, 1.0);\n"
+    "    float rayhitx = mix(a.x, b.x, intersect_norm);\n"
+    "    if (rayhitx > p.x) { \n"
+    "       evenoddintersect = (evenoddintersect == 0) ? 1 : 0;\n"
+    "       winding += crossingup ? +1 : -1; }\n"
+    "  }\n"
     "}\n"
-    "if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || \n"
-    "    (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) {\n"
-    "    discard;\n"
+    "\n"
+    "vec4 do_paint(uint id, vec2 p){\n"
+    "  Paint paint = gPaints[id];\n"
+    "  if(paint.type == 0u) return paint.color; // solid\n"
+    "  return paint.color;\n"
     "}\n"
-    " if(v_is_text == 1.0) {\n"
-    "   vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
-    "   o_color = sampled * v_color;\n"
-    "} else {\n"
-    "   vec4 display_color;"
-    "   if(v_tex_index == -1) {\n"
-    "     display_color = v_color;\n"
-    "   } else {\n"
-    "     display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color;\n"
-    "   }\n"
-    "   vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
-    "   if(v_corner_radius != 0.0f && v_is_text != 1.0f) {\n"
-    "   vec2 size_adjusted = v_size_px + v_corner_radius * 2.0f;\n"
-    "   vec2 pos_adjusted = v_pos_px - v_corner_radius;\n"
-    "   vec2 bottom_right = pos_adjusted + size_adjusted;\n"
-    "   if (frag_pos.x < pos_adjusted.x || frag_pos.x > bottom_right.x ||\n"
-    "     frag_pos.y < pos_adjusted.y || frag_pos.y > bottom_right.y) {\n"
-    "       discard;\n"
-    "   }\n"
-    "   }\n"
-    "  const vec2 rect_center = vec2(\n"
-    "    v_pos_px.x + v_size_px.x / 2.0f,\n"
-    "    u_screen_size.y - (v_size_px.y / 2.0f + v_pos_px.y)\n"
-    "  );\n"
-    "  const float edge_softness = 2.0f;\n"
-    "  const float border_softness = 2.0f;\n"
-    "  const vec4 corner_radius = vec4(v_corner_radius);\n"
     "\n"
-    "  float shadow_softness = 0.0f;\n"
-    "  vec2 shadow_offset = vec2(0.0f);\n"
+    "void main(){\n"
+    "  float bias = 0.5;\n"
+    "  if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) discard;\n"
+    "  if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) discard;\n"
+    "  if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) discard;\n"
     "\n"
-    "  vec2 half_size = vec2(v_size_px / 2.0);\n"
+    "  if (v_is_text == 1.0) {\n"
+    "    vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
+    "    o_color = sampled * v_color;\n"
+    "    return;\n"
+    "  }\n"
     "\n"
-    "  float distance = rounded_box_sdf(\n"
-    "    gl_FragCoord.xy - rect_center,\n"
-    "    half_size, corner_radius\n"
-    "  );\n"
-    "\n"
-    "  float smoothed_alpha = 1.0f - smoothstep(0.0f,\n"
-    "    edge_softness, distance);\n"
-    "\n"
-    "float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance)) :\n"
-    "                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+    "  const uint INVALID = 0xFFFFFFFFu;\n"
+    "  if (v_path_id != INVALID) {\n"
+    "    vec2 p = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
+    "    PathHeader path = gPaths[v_path_id];\n"
+    "    int evenoddintersect = 0; int winding = 0;\n"
+    "    float mindistsq = 1e30;\n"
+    "    for (uint i = 0u; i < path.count; ++i) {\n"
+    "      Segment s = gSegments[path.start + i];\n"
+    "      if (s.type == 0u) {\n"
+    "        vec2 a = vec2(s.x0, s.y0);\n"
+    "        vec2 b = vec2(s.x1, s.y1);\n"
+    "        accumulate_crossing_line(p, a, b, evenoddintersect, winding);\n"
+    "        mindistsq = min(mindistsq, distsq_line_segment(p, a, b));\n"
+    "      }\n"
+    "    }\n"
+    "    bool filled = (path.fill_rule == 0u) ? (evenoddintersect == 1) : (winding != 0);\n"
 
-
-    "  float shadow_distance = rounded_box_sdf(\n"
-    "    gl_FragCoord.xy - rect_center + shadow_offset,\n"
-    "    half_size, corner_radius\n"
-    "  );\n"
-    "  float shadow_alpha = 1.0f - smoothstep(\n"
-    "    -shadow_softness, shadow_softness, shadow_distance);\n"
+    "   float edgedist = sqrt(mindistsq);\n"
+    "   float pxwidth = max(1.0, fwidth(p.x) + fwidth(p.y));\n"
+    "   float signeddist = edgedist * (filled ? -1.0 : 1.0);\n" 
+    "   float cov = clamp(0.5 - signeddist / pxwidth, 0.0, 1.0);\n"
+    "    vec4 fill = do_paint(path.paint_fill, p);\n"
+    "    o_color = fill * cov;\n"
+    "    return;\n"
+    "  }\n"
     "\n"
-    "  vec4 res_color = mix(\n"
-    "    vec4(0.0f),\n"
-    "    display_color,\n"
-    "    min(display_color.a, smoothed_alpha)\n"
+    "  vec4 display_color;\n"
+    "  if (v_tex_index == -1) { display_color = v_color; }\n"
+    "  else { display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color; }\n"
+    "\n"
+    "  vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
+    "  if (v_corner_radius != 0.0 && v_is_text != 1.0) {\n"
+    "    vec2 size_adjusted = v_size_px + v_corner_radius * 2.0;\n"
+    "    vec2 pos_adjusted  = v_pos_px - v_corner_radius;\n"
+    "    vec2 br = pos_adjusted + size_adjusted;\n"
+    "    if (frag_pos.x < pos_adjusted.x || frag_pos.x > br.x || frag_pos.y < pos_adjusted.y || frag_pos.y > br.y) discard;\n"
+    "  }\n"
+    "\n"
+    "  vec2 rect_center = vec2(\n"
+    "    v_pos_px.x + v_size_px.x * 0.5,\n"
+    "    u_screen_size.y - (v_size_px.y * 0.5 + v_pos_px.y)\n"
     "  );\n"
-    "  if(v_border_width != 0.0f) {\n"
-    "  res_color = mix(\n"
-    "    res_color,\n"
-    "    v_border_color,\n"
-    "    min(v_border_color.a, min(border_alpha, smoothed_alpha))\n"
-    "  );\n"
-    "  }"
+    "  float edge_softness = 2.0;\n"
+    "  float border_softness = 2.0;\n"
+    "  vec4 corner_radius = vec4(v_corner_radius);\n"
+    "  float shadow_softness = 0.0; vec2 shadow_offset = vec2(0.0);\n"
+    "  vec2 half_size = vec2(v_size_px * 0.5);\n"
+    "\n"
+    "  float distance = rounded_box_sdf(gl_FragCoord.xy - rect_center, half_size, corner_radius);\n"
+    "  float smoothed_alpha = 1.0 - smoothstep(0.0, edge_softness, distance);\n"
+    "  float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance))\n"
+    "                    : (1.0 - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+    "\n"
+    "  float shadow_distance = rounded_box_sdf(gl_FragCoord.xy - rect_center + shadow_offset, half_size, corner_radius);\n"
+    "  float shadow_alpha = 1.0 - smoothstep(-shadow_softness, shadow_softness, shadow_distance);\n"
+    "\n"
+    "  vec4 res_color = mix(vec4(0.0), display_color, min(display_color.a, smoothed_alpha));\n"
+    "  if (v_border_width != 0.0) {\n"
+    "    res_color = mix(res_color, v_border_color, min(v_border_color.a, min(border_alpha, smoothed_alpha)));\n"
+    "  }\n"
     "  o_color = res_color;\n"
-    "}\n"
-    "\n"
-    ""
     "}\n";
 
   // Creating the shader program with the source code of the 
@@ -437,6 +575,56 @@ renderer_init(RnState* state) {
   glUseProgram(state->render.shader.id);
   set_projection_matrix(state);
   glUniform1iv(glGetUniformLocation(state->render.shader.id, "u_textures"), RN_MAX_TEX_COUNT_BATCH, tex_slots);
+
+  uint32_t paintId = state->render.vec.paint_cpu_len;
+  vec_reserve_paints(&state->render.vec, 1);
+  RnPaint* p = &state->render.vec.paint_cpu[ state->render.vec.paint_cpu_len++ ];
+  memset(p, 0, sizeof(*p));
+  p->type = 0;
+  p->color[0]=1.0f; p->color[1]=0.0f; p->color[2]=0.0f; p->color[3]=1.0f;
+
+  float x=100.0f, y=100.0f, w=100.0f, h=100.0f;
+  float cx = x + 0.5f*w;
+  float cy = y + 0.5f*h;
+
+  const float PI = 3.14159265358979323846f;
+  float R = 0.5f * (w < h ? w : h);
+  float r = R * 0.3819660112501051f; 
+
+  float px[20], py[20];
+  for (int i = 0; i < 20; ++i) {
+    float ang = -0.5f*PI + i * (PI/10.0f); 
+    float rad = (i % 2 == 0) ? r : R;          
+    px[i] = cx + rad * cosf(ang);
+    py[i] = cy + rad * sinf(ang); 
+  }
+
+  uint32_t segStart = state->render.vec.seg_cpu_len;
+  vec_reserve_segments(&state->render.vec, 30);
+  RnSegment* s = &state->render.vec.seg_cpu[ segStart ];
+  int si = 0;
+
+  for (int i = 0; i < 20; ++i) {
+    int j = (i + 1) % 20;
+    s[si++] = (RnSegment){ 0, px[i], py[i], px[j], py[j], 0,0,0,0,0,0 };
+  }
+
+  int innerIdx[11] = { 18, 16, 14, 12, 10, 8, 6, 4, 2, 0, 18};
+  for (int k = 0; k < 10; ++k) {
+    int i0 = innerIdx[k];
+    int i1 = innerIdx[k+1];
+
+    s[si++] = (RnSegment){ 0, px[i0], py[i0], px[i1], py[i1], 0,0,0,0,0,0 };
+  }
+
+  state->render.vec.seg_cpu_len += si;
+
+  uint32_t pathId = state->render.vec.path_cpu_len;
+  vec_reserve_paths(&state->render.vec, 1);
+  RnPathHeader* ph = &state->render.vec.path_cpu[ state->render.vec.path_cpu_len++ ];
+  *ph = (RnPathHeader){ segStart, (uint32_t)si, paintId, UINT32_MAX, 0.0f, 4.0f, 0, 0 };
+
+
 }
 
 /* This function renders every vertex in the current batch */
@@ -446,6 +634,9 @@ renderer_flush(RnState* state) {
 
   // Set the data to draw (the vertices in the current batch)
   glUseProgram(state->render.shader.id);
+
+  vec_sync_bufs(state);
+
   glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo);
   glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(RnVertex) * state->render.vert_count, 
                   state->render.verts);
@@ -1497,6 +1688,8 @@ rn_add_vertex_ex(
 
   vertex->max_coord[0] = state->cull_end.x;
   vertex->max_coord[1] = state->cull_end.y;
+  
+  vertex->path_id = 0; 
 
   state->render.vert_count++;
 
@@ -1613,6 +1806,12 @@ rn_rect_render_ex(
   RnColor border_color, 
   float border_width,
   float corner_radius) {
+
+
+pos.x = floorf(pos.x + 0.5f);
+pos.y = floorf(pos.y + 0.5f);
+size.x = floorf(size.x + 0.5f);
+size.y = floorf(size.y + 0.5f);
 
   vec2s pos_initial = pos;
   // Change the position in a way that the given  
@@ -2015,6 +2214,7 @@ rn_text_render_paragraph_ex(
   RnParagraphProps props,
   bool render) {
 
+
   char* paragraph_copy = strdup(const_paragraph);  
   char* paragraph = trimspaces(paragraph_copy);
   RnHarfbuzzText* hb_text = rn_hb_text_from_str(state, *font, paragraph);
@@ -2079,6 +2279,7 @@ rn_text_render_paragraph_ex(
   }
 
 
+
   float align_diver = (props.align == RN_PARAGRAPH_ALIGNMENT_CENTER) ? 2.0f : 1.0f;
   if(props.align != RN_PARAGRAPH_ALIGNMENT_LEFT) {
     float centered = start_pos.x + (((props.wrap - start_pos.x)  - lw[0]) / align_diver);
@@ -2088,6 +2289,8 @@ rn_text_render_paragraph_ex(
 
   if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
     pos.x += font->space_w;
+
+
 
   _it = 1;
   for (uint32_t i = 0; i < hb_text->glyph_count; i++) {
@@ -2153,8 +2356,6 @@ rn_text_render_paragraph_ex(
     maxasc = fmaxf(maxasc, glyph.ascender);
     maxdec = fminf(maxdec, glyph.descender);
   }
-  if(props.align == RN_PARAGRAPH_ALIGNMENT_CENTER)
-    textw -= font->space_w;
 
   float last_line_h = maxasc + abs(maxdec);
   return (RnTextProps){
