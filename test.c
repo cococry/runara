@@ -77,35 +77,32 @@ void renderframebuffer(
 int main() {
   glfwInit();
 
-  GLFWwindow* window = glfwCreateWindow(1280, 720, "Hello, World!", NULL, NULL);
+  GLFWwindow* window = glfwCreateWindow(500, 500, "Hello, World!", NULL, NULL);
 
   glfwSetFramebufferSizeCallback(window, resizecb);
 
   glfwMakeContextCurrent(window);
 
   // Initialize your state of the library
-  state = rn_init(1280, 720, (RnGLLoader)glfwGetProcAddress);
-
-  // Loading some fonts
-  RnFont *heading2 = rn_load_font(state, "/usr/share/fonts/TTF/DejaVuSans.ttf", 48); 
+  state = rn_init(500, 500, (RnGLLoader)glfwGetProcAddress);
 
 
+
+  float dt = 0.0f, lt = 0.0f;
   while(!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    vec4s col = rn_color_to_zto(rn_color_from_hex(0x101010));
+    glClearColor(col.r, col.g, col.b, col.a);
 
+    float ct = glfwGetTime();
+    dt = ct - lt;
+    lt = ct;
     // Beginning a rende pass with Runara
     //
 
+
     rn_begin(state);
-
-
-    rn_rect_render(state, (vec2s){100, 100}, (vec2s){100, 100}, RN_WHITE);
-
-    // Ending the render pass
     rn_end(state);
-
-
 
     // External application or game code can still run perfectly fine
     // here.

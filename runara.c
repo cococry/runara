@@ -1,12 +1,18 @@
-#include "include/runara/runara.h"
+#include <float.h>
+#include <fontconfig/fontconfig.h>
 #include <cglm/mat4.h>
 #include <cglm/types-struct.h>
 #include <ctype.h>
-#include <fontconfig/fontconfig.h>
+#include "include/runara/runara.h"
 
 #include <glad/glad.h>
+#include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
+#define LINESKY_IMPLEMENTATION 
+#define LINESKY_STRIP_STRUCTURES
+#include <linesky.h> 
 
 #include <locale.h>
 #include <stdbool.h>
@@ -42,19 +48,11 @@ static void             renderer_begin(RnState* state);
 static void             create_font_atlas(RnFont* font);
 
 
-static void             init_glyph_cache(RnGlyphCache* cache, size_t init_cap);
-static void             resize_glyph_cache(RnGlyphCache* cache, size_t new_cap);
-static void             add_glyph_to_cache(RnGlyphCache* cache, RnGlyph glyph);
-static void             free_glyph_cache(RnGlyphCache* cache);
 static RnGlyph*         get_glyph_from_codepoint(RnGlyphCache cache, RnFont font, uint64_t codepoint);
 static RnGlyph          load_glyph_from_codepoint(RnFont* font, uint64_t codepoint, bool colored);
 static RnGlyph          load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint);
 static RnGlyph          get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, uint64_t codepoint);
 
-static void             init_hb_cache(RnHarfbuzzCache* cache, size_t init_cap);
-static void             resize_hb_cache(RnHarfbuzzCache* cache, size_t new_cap);
-static void             add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText* text); 
-static void             free_hb_cache(RnHarfbuzzCache* cache);
 static RnHarfbuzzText*  get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const char* str);
 static RnHarfbuzzText*  load_hb_text_from_str(RnFont font, const char* str);
 static RnHarfbuzzText*  get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, const char* str);
@@ -62,25 +60,6 @@ static RnHarfbuzzText*  get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont fo
 static uint64_t         djb2_hash(const unsigned char *str);
 
 // --- Static Functions ---
-
-static void vec_reserve_segments(RnVectorState* vb, uint32_t needed) {
-  if (vb->seg_cpu_len + needed > vb->seg_cpu_cap) {
-    vb->seg_cpu_cap = (vb->seg_cpu_len + needed) * 2;
-    vb->seg_cpu = (RnSegment*)realloc(vb->seg_cpu, vb->seg_cpu_cap * sizeof(RnSegment));
-  }
-}
-static void vec_reserve_paths(RnVectorState* vb, uint32_t needed) {
-  if (vb->path_cpu_len + needed > vb->path_cpu_cap) {
-    vb->path_cpu_cap = (vb->path_cpu_len + needed) * 2;
-    vb->path_cpu = (RnPathHeader*)realloc(vb->path_cpu, vb->path_cpu_cap * sizeof(RnPathHeader));
-  }
-}
-static void vec_reserve_paints(RnVectorState* vb, uint32_t needed) {
-  if (vb->paint_cpu_len + needed > vb->paint_cpu_cap) {
-    vb->paint_cpu_cap = (vb->paint_cpu_len + needed) * 2;
-    vb->paint_cpu = (RnPaint*)realloc(vb->paint_cpu, vb->paint_cpu_cap * sizeof(RnPaint));
-  }
-}
 
 static void sync_gpu_ssbo(uint32_t id, const void* data, GLsizeiptr len, uint32_t bytesize) {
   size_t bytes = len * bytesize; 
@@ -94,12 +73,23 @@ static void sync_gpu_ssbo(uint32_t id, const void* data, GLsizeiptr len, uint32_
   }
 }
 
-static void vec_sync_bufs(RnState* state) {
-  RnVectorState* vs = &state->render.vec;
+static void ensure_gpu_ssbo(GLuint buf, uint32_t* cap, size_t want_bytes) {
+  if (want_bytes <= *cap) return; 
+  size_t new_bytes = (*cap > 0 ? *cap : 4096);
+  while (new_bytes < want_bytes)
+    new_bytes *= 2;
+  glNamedBufferData(buf, new_bytes, NULL, GL_DYNAMIC_DRAW);
+  *cap = (uint32_t)new_bytes;
+}
 
-  sync_gpu_ssbo(vs->seg_ssbo, vs->seg_cpu, vs->seg_cpu_len, sizeof(RnSegment));
-  sync_gpu_ssbo(vs->path_ssbo, vs->path_cpu, vs->path_cpu_len, sizeof(RnPathHeader)); 
-  sync_gpu_ssbo(vs->paint_ssbo, vs->paint_cpu, vs->paint_cpu_len, sizeof(RnPaint)); 
+
+
+static void vec_sync_bufs(RnState* state) {
+  RnVgState* vs = &state->render.vec;
+
+  sync_gpu_ssbo(vs->seg_ssbo, vs->segments.data, vs->segments.len, sizeof(RnSegment));
+  sync_gpu_ssbo(vs->path_ssbo, vs->paths.data, vs->paths.len, sizeof(RnPathHeader)); 
+  sync_gpu_ssbo(vs->paint_ssbo, vs->paints.data, vs->paints.len, sizeof(RnPaint)); 
 
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, vs->seg_ssbo);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, vs->path_ssbo);
@@ -169,6 +159,34 @@ shader_prg_create(const char* vert_src, const char* frag_src) {
   return prg;
 }
 
+static uint32_t create_compute_program(const char* src) {
+  GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+  glShaderSource(cs, 1, &src, NULL);
+  glCompileShader(cs);
+  GLint ok=0; glGetShaderiv(cs, GL_COMPILE_STATUS, &ok);
+  if(!ok){ 
+    GLint len=0; 
+    glGetShaderiv(cs, GL_INFO_LOG_LENGTH, &len);
+    char* log=(char*)malloc(len?len:1); 
+    if(len) 
+      glGetShaderInfoLog(cs,len,NULL,log); 
+  }
+  GLuint prog = glCreateProgram();
+  glAttachShader(prog, cs);
+  glLinkProgram(prog);
+  glDeleteShader(cs);
+  glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+  if(!ok){ 
+    GLint len=0; 
+    glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+    char* log=(char*)malloc(len?len:1); 
+    if(len) 
+      glGetProgramInfoLog(prog,len,NULL,log);
+    fprintf(stderr,"[Compute] link error:\n%s\n", log); free(log);
+  }
+  return prog;
+}
+
 void 
 shader_set_mat(RnShader prg, const char* name, mat4 mat) {
   glUniformMatrix4fv(glGetUniformLocation(prg.id, name), 1, GL_FALSE, mat[0]);
@@ -181,10 +199,10 @@ shader_set_mat(RnShader prg, const char* name, mat4 mat) {
 void
 set_projection_matrix(RnState* state) {
   mat4 orthoMatrix = GLM_MAT4_IDENTITY_INIT;
-  glm_ortho(0.0f, (float)state->render_w,
-          (float)state->render_h, 0.0f, 
-          -1.0f, 1.0f,
-          orthoMatrix);
+  glm_ortho(0.0f, (float)state->render.render_w,
+            (float)state->render.render_h, 0.0f, 
+            -1.0f, 1.0f,
+            orthoMatrix);
 
   // Upload the matrix to the shader
   shader_set_mat(state->render.shader, "u_proj", orthoMatrix);
@@ -210,20 +228,12 @@ init_vector_rendering(RnState* state) {
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, state->render.vec.paint_ssbo);
 
   // CPU staging init
-  state->render.vec.seg_cpu_cap   = 1024;
-  state->render.vec.seg_cpu_len   = 0;
-  state->render.vec.seg_cpu       = (RnSegment*) malloc(seg_bytes);
-
-  state->render.vec.path_cpu_cap  = 256;
-  state->render.vec.path_cpu_len  = 0;
-  state->render.vec.path_cpu      = (RnPathHeader*) malloc(path_bytes);
-
-  state->render.vec.paint_cpu_cap = 64;
-  state->render.vec.paint_cpu_len = 0;
-  state->render.vec.paint_cpu     = (RnPaint*) malloc(paint_bytes);
-
-  printf("Init.\n");
-
+  state->render.vec.segments = (RnVgSegmentList)DA_INIT;
+  DA_RESERVE(&state->render.vec.segments, 1024);
+  state->render.vec.paths = (RnVgPathHeaderList)DA_INIT;
+  DA_RESERVE(&state->render.vec.paths, 256);
+  state->render.vec.paints = (RnVgPaintList)DA_INIT;
+  DA_RESERVE(&state->render.vec.paints, 32);
 }
 
 /* This function sets up OpenGL buffer object and shaders 
@@ -332,11 +342,6 @@ renderer_init(RnState* state) {
                         (void*)(intptr_t*)offsetof(RnVertex, max_coord));
   glEnableVertexAttribArray(11);
 
-glVertexAttribIPointer(12, 1, GL_UNSIGNED_INT, sizeof(RnVertex),
-                       (void*)(intptr_t)offsetof(RnVertex, path_id));
-
-glEnableVertexAttribArray(12);
-
   init_vector_rendering(state);
 
   /* Shader source code*/
@@ -356,7 +361,6 @@ glEnableVertexAttribArray(12);
     "layout (location = 9) in float a_is_text;\n"
     "layout (location = 10) in vec2 a_min_coord;\n"
     "layout (location = 11) in vec2 a_max_coord;\n"
-    "layout (location = 12) in uint a_path_id;\n"
 
     "uniform mat4 u_proj;\n"
     "out vec4 v_border_color;\n"
@@ -368,7 +372,6 @@ glEnableVertexAttribArray(12);
     "flat out vec2 v_pos_px;\n"
     "flat out float v_corner_radius;\n"
     "flat out float v_is_text;\n"
-    "flat out uint v_path_id;\n"
     "out vec2 v_min_coord;\n"
     "out vec2 v_max_coord;\n"
 
@@ -382,53 +385,15 @@ glEnableVertexAttribArray(12);
     "v_pos_px = a_pos_px;\n"
     "v_corner_radius = a_corner_radius;\n"
     "v_is_text = a_is_text;\n"
-    "v_path_id = a_path_id;\n"
     "v_min_coord = a_min_coord;\n"
     "v_max_coord = a_max_coord;\n"
     "gl_Position = u_proj * vec4(a_pos.x, a_pos.y, 0.0f, 1.0);\n"
     "}\n";
 
 
-  const char* frag_src =
+
+  const char* frag_src = 
     "#version 460 core\n"
-    "\n"
-    // ===== SSBOs =====
-    "struct Segment {\n"
-    "    uint  type;\n"
-    "    float x0, y0;\n"
-    "    float x1, y1;\n"
-    "    float x2, y2;\n"
-    "    float x3, y3;\n"
-    "    uint  flags;\n"
-    "    uint  _pad;\n"
-    "};\n"
-    "layout(std430, binding = 0) readonly buffer SegBuf { Segment gSegments[]; };\n"
-    "\n"
-    "struct PathHeader {\n"
-    "    uint  start;\n"
-    "    uint  count;\n"
-    "    uint  paint_fill;\n"
-    "    uint  paint_stroke;\n"
-    "    float stroke_width;\n"
-    "    float miter_limit;\n"
-    "    uint  fill_rule;\n"
-    "    uint  _pad0;\n"
-    "};\n"
-    "layout(std430, binding = 1) readonly buffer PathBuf { PathHeader gPaths[]; };\n"
-    "\n"
-    "struct Paint {\n"
-    "    uint  type;\n"
-    "    vec4  color;\n"
-    "    vec2  p0;\n"
-    "    vec2  p1;\n"
-    "    vec2  scale;\n"
-    "    vec2  repeat;\n"
-    "    int   tex_index;\n"
-    "    int   _pad1;\n"
-    "};\n"
-    "layout(std430, binding = 2) readonly buffer PaintBuf { Paint gPaints[]; };\n"
-    "\n"
-    // ===== IO =====
     "out vec4 o_color;\n"
     "\n"
     "in vec4 v_color;\n"
@@ -440,119 +405,364 @@ glEnableVertexAttribArray(12);
     "flat in vec2 v_pos_px;\n"
     "flat in float v_corner_radius;\n"
     "flat in float v_is_text;\n"
-    "in vec2 v_min_coord;\n"
-    "in vec2 v_max_coord;\n"
-    "flat in uint  v_path_id;\n"
-    "\n"
     "uniform sampler2D u_textures[32];\n"
     "uniform vec2 u_screen_size;\n"
+    "in vec2 v_min_coord;\n"
+    "in vec2 v_max_coord;\n"
     "\n"
     "float rounded_box_sdf(vec2 center_pos, vec2 size, vec4 radius) {\n"
     "  radius.xy = (center_pos.x > 0.0) ? radius.xy : radius.zw;\n"
-    "  radius.x  = (center_pos.x > 0.0) ? radius.x  : radius.y;\n"
+    "  radius.x = (center_pos.x > 0.0) ? radius.x : radius.y;\n"
+    "\n"
     "  vec2 q = abs(center_pos) - size + radius.x;\n"
     "  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius.x;\n"
     "}\n"
     "\n"
-    "float distsq_line_segment(vec2 p, vec2 a, vec2 b) {\n"
-    "   vec2 ab = b - a;\n"
-    "   float intersect_norm = clamp(dot(p - a, ab) / max(dot(ab,ab), 1e-6), 0.0, 1.0);\n"
-    "   vec2 intersect_point = a + (intersect_norm * ab);\n"
-    "   vec2 dist = p - intersect_point;\n" 
-    "   return dot(dist, dist);\n"
+    "void main() {\n"
+    "float bias = 0.5; // Small bias to prevent missing pixels\n"
+    "\n"
+    "if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) {\n"
+    "    discard;\n"
+    "}\n"
+    "if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) {\n"
+    "    discard;\n"
+    "}\n"
+    "if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || \n"
+    "    (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) {\n"
+    "    discard;\n"
+    "}\n"
+    " if(v_is_text == 1.0) {\n"
+    "   vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
+    "   o_color = sampled * v_color;\n"
+    "} else {\n"
+    "   vec4 display_color;"
+    "   if(v_tex_index == -1) {\n"
+    "     display_color = v_color;\n"
+    "   } else {\n"
+    "     display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color;\n"
+    "   }\n"
+    "   vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
+    "   if(v_corner_radius != 0.0f && v_is_text != 1.0f) {\n"
+    "   vec2 size_adjusted = v_size_px + v_corner_radius * 2.0f;\n"
+    "   vec2 pos_adjusted = v_pos_px - v_corner_radius;\n"
+    "   vec2 bottom_right = pos_adjusted + size_adjusted;\n"
+    "   if (frag_pos.x < pos_adjusted.x || frag_pos.x > bottom_right.x ||\n"
+    "     frag_pos.y < pos_adjusted.y || frag_pos.y > bottom_right.y) {\n"
+    "       discard;\n"
+    "   }\n"
+    "   }\n"
+    "  const vec2 rect_center = vec2(\n"
+    "    v_pos_px.x + v_size_px.x / 2.0f,\n"
+    "    u_screen_size.y - (v_size_px.y / 2.0f + v_pos_px.y)\n"
+    "  );\n"
+    "  const float edge_softness = 2.0f;\n"
+    "  const float border_softness = 2.0f;\n"
+    "  const vec4 corner_radius = vec4(v_corner_radius);\n"
+    "\n"
+    "  float shadow_softness = 0.0f;\n"
+    "  vec2 shadow_offset = vec2(0.0f);\n"
+    "\n"
+    "  vec2 half_size = vec2(v_size_px / 2.0);\n"
+    "\n"
+    "  float distance = rounded_box_sdf(\n"
+    "    gl_FragCoord.xy - rect_center,\n"
+    "    half_size, corner_radius\n"
+    "  );\n"
+    "\n"
+    "  float smoothed_alpha = 1.0f - smoothstep(0.0f,\n"
+    "    edge_softness, distance);\n"
+    "\n"
+    "float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance)) :\n"
+    "                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+
+
+    "  float shadow_distance = rounded_box_sdf(\n"
+    "    gl_FragCoord.xy - rect_center + shadow_offset,\n"
+    "    half_size, corner_radius\n"
+    "  );\n"
+    "  float shadow_alpha = 1.0f - smoothstep(\n"
+    "    -shadow_softness, shadow_softness, shadow_distance);\n"
+    "\n"
+    "  vec4 res_color = mix(\n"
+    "    vec4(0.0f),\n"
+    "    display_color,\n"
+    "    min(display_color.a, smoothed_alpha)\n"
+    "  );\n"
+    "  if(v_border_width != 0.0f) {\n"
+    "  res_color = mix(\n"
+    "    res_color,\n"
+    "    v_border_color,\n"
+    "    min(v_border_color.a, min(border_alpha, smoothed_alpha))\n"
+    "  );\n"
+    "  }"
+    "  o_color = res_color;\n"
     "}\n"
     "\n"
-    "void accumulate_crossing_line(in vec2 p, in vec2 a, in vec2 b, inout int evenoddintersect, inout int winding){\n"
-    "  bool crossingup = (a.y <= p.y) && (b.y >  p.y);\n"
-    "  bool crossingdown = (b.y <= p.y) && (a.y >  p.y);\n"
-    "  if (crossingup || crossingdown) {\n"
-    "    float intersect_norm = clamp((p.y - a.y) / (b.y - a.y), 0.0, 1.0);\n"
-    "    float rayhitx = mix(a.x, b.x, intersect_norm);\n"
-    "    if (rayhitx > p.x) { \n"
-    "       evenoddintersect = (evenoddintersect == 0) ? 1 : 0;\n"
-    "       winding += crossingup ? +1 : -1; }\n"
-    "  }\n"
+    ""
+    "}\n";
+
+  const char* comp_src =
+    "#version 460 core\n"
+    "layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;\n"
+    "\n"
+    "struct Segment { uint type; float x0,y0,x1,y1,x2,y2,x3,y3; uint flags; uint _pad; };\n"
+    "layout(std430, binding = 0) readonly buffer SegBuf  { Segment   gSegments[]; };\n"
+    "struct PathHeader { uint start,count,paint_fill,paint_stroke; float stroke_width,miter_limit; uint fill_rule, stroke_flags; };\n"
+    "layout(std430, binding = 1) readonly buffer PathBuf { PathHeader gPaths[]; };\n"
+    "struct Paint { uint type; vec4 color; vec2 p0,p1,scale,repeat; int tex_index; int _pad1; };\n"
+    "layout(std430, binding = 2) readonly buffer PaintBuf { Paint gPaints[]; };\n"
+    "\n"
+    "const uint RN_TILE_EMPTY = 0u;\n"
+    "const uint RN_TILE_FULL  = 1u;\n"
+    "const uint RN_TILE_MIXED = 2u;\n"
+    "struct PathTileMeta {\n"
+    "    uint tiles_x, tiles_y;\n"
+    "    uint tile_size;\n"
+    "    uint ranges_off;\n"
+    "    uint total_ranges;\n"
+    "    uint built;\n"
+    "};\n"
+    "layout(std430, binding = 4) readonly buffer MetaBuf   { PathTileMeta gMeta[]; };\n"
+    "struct TileRange { uint start, count, flags; };\n"
+    "layout(std430, binding = 5) readonly buffer RangeBuf  { TileRange   gRanges[]; };\n"
+    "layout(std430, binding = 6) readonly buffer IndexBuf  { uint        gIndices[]; };\n"
+    "\n"
+    "struct TileJob {\n"
+    "    int  base_x, base_y;\n"
+    "    int  rect_w, rect_h;\n"
+    "    uint path_id;\n"
+    "    uint tile_x, tile_y;\n"
+    "    uint _pad;\n"
+    "};\n"
+    "layout(std430, binding = 7) readonly buffer JobBuf { TileJob gJobs[]; };\n"
+    "\n"
+    "layout(rgba8, binding = 0) uniform writeonly image2D uAtlas;\n"
+    "\n"
+    "const float EPS       = 1e-12;\n"
+    "const float EPS_SMALL = 1e-6;\n"
+    "\n"
+    "float cross2d(vec2 a, vec2 b) { return a.x*b.y - a.y*b.x; }\n"
+    "vec2 perp(vec2 v) { return vec2(-v.y, v.x); }\n"
+    "\n"
+    "float sd_segment(vec2 p, vec2 a, vec2 b) {\n"
+    "    vec2 d = b - a;\n"
+    "    float md = max(dot(d,d), EPS);\n"
+    "    float t = clamp(dot(p-a,d)/md, 0.0, 1.0);\n"
+    "    return length(p - (a + t*d));\n"
+    "}\n"
+    "\n"
+    "float sd_stroke_segment_butt(vec2 p, vec2 a, vec2 b, float width, float dwedge) {\n"
+    "    float radius = 0.5 * width;\n"
+    "    vec2 d = b - a;\n"
+    "    float len = max(length(d), EPS);\n"
+    "    vec2 t = d / len, n = vec2(-t.y, t.x);\n"
+    "    vec2 c = 0.5 * (a + b);\n"
+    "    vec2 lp = vec2(dot(p - c, t), dot(p - c, n));\n"
+    "    vec2 sdist = abs(lp) - vec2(0.5 * (len + clamp(dwedge, 0.0, width * 0.5)), radius);\n"
+    "    return length(max(sdist, vec2(0))) + min(max(sdist.x, sdist.y), 0.0);\n"
+    "}\n"
+    "\n"
+    "float sd_triangle(vec2 p, vec2 a, vec2 b, vec2 c) {\n"
+    "    if (cross2d(b - a, c - a) < 0.0) { vec2 t=b; b=c; c=t; }\n"
+    "    vec2 e0=b-a, e1=c-b, e2=a-c;\n"
+    "    vec2 v0=p-a, v1=p-b, v2=p-c;\n"
+    "    vec2 pq0=v0-e0*clamp(dot(v0,e0)/max(dot(e0,e0),EPS),0.0,1.0);\n"
+    "    vec2 pq1=v1-e1*clamp(dot(v1,e1)/max(dot(e1,e1),EPS),0.0,1.0);\n"
+    "    vec2 pq2=v2-e2*clamp(dot(v2,e2)/max(dot(e2,e2),EPS),0.0,1.0);\n"
+    "    float d=min(min(dot(pq0,pq0),dot(pq1,pq1)),dot(pq2,pq2));\n"
+    "    float s0=cross2d(e0,v0), s1=cross2d(e1,v1), s2=cross2d(e2,v2);\n"
+    "    float inside=min(min(s0,s1),s2);\n"
+    "    return (inside>0.0)?-sqrt(d):sqrt(d);\n"
+    "}\n"
+    "\n"
+    "float sd_stroke_segment(vec2 p, vec2 a, vec2 b, float width) {\n"
+    "    return sd_segment(p,a,b)-0.5*width;\n"
+    "}\n"
+    "\n"
+    "vec2 line_intersect(vec2 p, vec2 r, vec2 q, vec2 s) {\n"
+    "    float d = cross2d(r,s);\n"
+    "    if(abs(d)<EPS_SMALL){\n"
+    "        float rr=max(dot(r,r),EPS);\n"
+    "        vec2 w=q-p;\n"
+    "        float t=dot(w,r)/rr;\n"
+    "        return p+r*t;\n"
+    "    }\n"
+    "    float t=cross2d(q-p,s)/d;\n"
+    "    return p+r*t;\n"
+    "}\n"
+    "\n"
+    "float distsq_line_segment(vec2 p, vec2 a, vec2 b) {\n"
+    "    vec2 ab=b-a;\n"
+    "    float denom=max(dot(ab,ab),EPS_SMALL);\n"
+    "    float t=clamp(dot(p-a,ab)/denom,0.0,1.0);\n"
+    "    vec2 q=a+t*ab;\n"
+    "    vec2 d=p-q;\n"
+    "    return dot(d,d);\n"
+    "}\n"
+    "\n"
+    "void accumulate_crossing_line(vec2 p, vec2 a, vec2 b, inout int eo, inout int winding){\n"
+    "    float dy=b.y-a.y;\n"
+    "    if(abs(dy)<EPS_SMALL) return;\n"
+    "    bool up=(a.y<=p.y)&&(b.y>p.y);\n"
+    "    bool dn=(b.y<=p.y)&&(a.y>p.y);\n"
+    "    if(up||dn){\n"
+    "        float t=clamp((p.y-a.y)/dy,0.0,1.0);\n"
+    "        float x=mix(a.x,b.x,t);\n"
+    "        if(x>p.x){ eo=(eo==0)?1:0; winding+=up?+1:-1; }\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "float sd_join_miter(vec2 p, vec2 a, vec2 b, vec2 c, float width, float miter_limit){\n"
+    "    vec2 d0=normalize(b-a), d1=normalize(c-b);\n"
+    "    float radius=0.5*width;\n"
+    "    float side=-sign(cross2d(d0,d1));\n"
+    "    if(abs(side)<EPS_SMALL) return 1e9;\n"
+    "    vec2 n0=perp(d0)*side, n1=perp(d1)*side;\n"
+    "    const float px=0.5;\n"
+    "    vec2 e0=b+n0*(radius-px), e1=b+n1*(radius-px);\n"
+    "    vec2 t=line_intersect(e0,d0,e1,d1);\n"
+    "    float miterlen=length(t-b)/max(radius,EPS);\n"
+    "    if(miterlen>miter_limit){\n"
+    "        return (side>0.0)?sd_triangle(p,b,e0,e1):sd_triangle(p,b,e1,e0);\n"
+    "    } else {\n"
+    "        return (side>0.0)?sd_triangle(p,e0,e1,t):sd_triangle(p,e1,e0,t);\n"
+    "    }\n"
     "}\n"
     "\n"
     "vec4 do_paint(uint id, vec2 p){\n"
-    "  Paint paint = gPaints[id];\n"
-    "  if(paint.type == 0u) return paint.color; // solid\n"
-    "  return paint.color;\n"
+    "    if(id>=gPaints.length()) return vec4(0.0);\n"
+    "    Paint paint=gPaints[id];\n"
+    "    return paint.color;\n"
     "}\n"
     "\n"
-    "void main(){\n"
-    "  float bias = 0.5;\n"
-    "  if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) discard;\n"
-    "  if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) discard;\n"
-    "  if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) discard;\n"
+    "bool get_neighbor_segments(uint path_start,uint path_count,uint sidx,out Segment prevSeg,out Segment nextSeg){\n"
+    "    bool havePrev=false, haveNext=false;\n"
+    "    if(sidx>path_start){ prevSeg=gSegments[sidx-1]; havePrev=true; }\n"
+    "    if(sidx+1<path_start+path_count){ nextSeg=gSegments[sidx+1]; haveNext=true; }\n"
+    "    return havePrev||haveNext;\n"
+    "}\n"
     "\n"
-    "  if (v_is_text == 1.0) {\n"
-    "    vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
-    "    o_color = sampled * v_color;\n"
-    "    return;\n"
-    "  }\n"
+    "vec4 rasterize_tile_px(vec2 p,uint path_id,uint tile_index){\n"
+    "    const uint INVALID=0xFFFFFFFFu;\n"
+    "    if(path_id==INVALID||path_id>=gPaths.length()||path_id>=gMeta.length()) return vec4(0.0);\n"
     "\n"
-    "  const uint INVALID = 0xFFFFFFFFu;\n"
-    "  if (v_path_id != INVALID) {\n"
-    "    vec2 p = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
-    "    PathHeader path = gPaths[v_path_id];\n"
-    "    int evenoddintersect = 0; int winding = 0;\n"
-    "    float mindistsq = 1e30;\n"
-    "    for (uint i = 0u; i < path.count; ++i) {\n"
-    "      Segment s = gSegments[path.start + i];\n"
-    "      if (s.type == 0u) {\n"
-    "        vec2 a = vec2(s.x0, s.y0);\n"
-    "        vec2 b = vec2(s.x1, s.y1);\n"
-    "        accumulate_crossing_line(p, a, b, evenoddintersect, winding);\n"
-    "        mindistsq = min(mindistsq, distsq_line_segment(p, a, b));\n"
-    "      }\n"
+    "    PathHeader path=gPaths[path_id];\n"
+    "    PathTileMeta meta=gMeta[path_id];\n"
+    "    if(tile_index>=meta.total_ranges) return vec4(0.0);\n"
+    "\n"
+    "    TileRange r=gRanges[meta.ranges_off+tile_index];\n"
+    "    uint begin=r.start, end=r.start+r.count;\n"
+    "\n"
+    "    int eo=0,winding=0;\n"
+    "    bool want_miter=(path.stroke_flags&2u)!=0u;\n"
+    "    float mindistsq=1e30, strokedist=1e30;\n"
+    "\n"
+    "    for(uint j=begin;j<end;++j){\n"
+    "        if(j>=gIndices.length()) break;\n"
+    "        uint sidx=gIndices[j];\n"
+    "        if(sidx>=gSegments.length()) break;\n"
+    "        Segment s=gSegments[sidx];\n"
+    "        if(s.type!=0u) continue;\n"
+    "\n"
+    "        vec2 a=vec2(s.x0,s.y0), b=vec2(s.x1,s.y1);\n"
+    "        accumulate_crossing_line(p,a,b,eo,winding);\n"
+    "        mindistsq=min(mindistsq,distsq_line_segment(p,a,b));\n"
+    "\n"
+    "        if(path.stroke_width>0.0){\n"
+    "            float segdist=want_miter?sd_stroke_segment_butt(p,a,b,path.stroke_width,0.0)\n"
+    "                                    :sd_stroke_segment(p,a,b,path.stroke_width);\n"
+    "            strokedist=min(strokedist,segdist);\n"
+    "\n"
+    "            if(want_miter){\n"
+    "                Segment prevSeg,nextSeg;\n"
+    "                bool haveNeighbors=get_neighbor_segments(path.start,path.count,sidx,prevSeg,nextSeg);\n"
+    "                if(haveNeighbors){\n"
+    "                    if(sidx>path.start){\n"
+    "                        vec2 pa=vec2(prevSeg.x0,prevSeg.y0), pb=vec2(prevSeg.x1,prevSeg.y1);\n"
+    "                        if(length(pb-a)<1e-3){\n"
+    "                            float wedge=sd_join_miter(p,pa,pb,b,path.stroke_width,max(path.miter_limit,1.0));\n"
+    "                            float dp=sd_stroke_segment_butt(p,pa,pb,path.stroke_width,wedge);\n"
+    "                            float dn=sd_stroke_segment_butt(p,pb,b,path.stroke_width,wedge);\n"
+    "                            float distSegments=min(dp,dn);\n"
+    "                            float distWedge=max(wedge-0.5,-distSegments);\n"
+    "                            strokedist=min(strokedist,min(distSegments,distWedge));\n"
+    "                        }\n"
+    "                    }\n"
+    "                    if(sidx+1<path.start+path.count){\n"
+    "                        vec2 nc0=vec2(nextSeg.x0,nextSeg.y0), nc1=vec2(nextSeg.x1,nextSeg.y1);\n"
+    "                        if(length(b-nc0)<1e-3){\n"
+    "                            float wedge=sd_join_miter(p,a,b,nc1,path.stroke_width,max(path.miter_limit,1.0));\n"
+    "                            float dp=sd_stroke_segment_butt(p,a,b,path.stroke_width,wedge);\n"
+    "                            float dn=sd_stroke_segment_butt(p,b,nc1,path.stroke_width,wedge);\n"
+    "                            float distSegments=min(dp,dn);\n"
+    "                            float distWedge=max(wedge-0.5,-distSegments);\n"
+    "                            strokedist=min(strokedist,min(distSegments,distWedge));\n"
+    "                        }\n"
+    "                    }\n"
+    "                }\n"
+    "            }\n"
+    "        }\n"
     "    }\n"
-    "    bool filled = (path.fill_rule == 0u) ? (evenoddintersect == 1) : (winding != 0);\n"
-
-    "   float edgedist = sqrt(mindistsq);\n"
-    "   float pxwidth = max(1.0, fwidth(p.x) + fwidth(p.y));\n"
-    "   float signeddist = edgedist * (filled ? -1.0 : 1.0);\n" 
-    "   float cov = clamp(0.5 - signeddist / pxwidth, 0.0, 1.0);\n"
-    "    vec4 fill = do_paint(path.paint_fill, p);\n"
-    "    o_color = fill * cov;\n"
-    "    return;\n"
-    "  }\n"
     "\n"
-    "  vec4 display_color;\n"
-    "  if (v_tex_index == -1) { display_color = v_color; }\n"
-    "  else { display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color; }\n"
+    "    bool filled=(path.fill_rule==0u)?(eo==1):(winding!=0);\n"
+    "    float edgedist=sqrt(mindistsq);\n"
+    "    float signedd=edgedist*(filled?-1.0:1.0);\n"
+    "    float cov=clamp(0.5-signedd/1.0,0.0,1.0);\n"
+    "    float strokecov=0.0;\n"
+    "    if(path.stroke_width>0.0) strokecov=clamp(0.5-(strokedist/1.0),0.0,1.0);\n"
     "\n"
-    "  vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
-    "  if (v_corner_radius != 0.0 && v_is_text != 1.0) {\n"
-    "    vec2 size_adjusted = v_size_px + v_corner_radius * 2.0;\n"
-    "    vec2 pos_adjusted  = v_pos_px - v_corner_radius;\n"
-    "    vec2 br = pos_adjusted + size_adjusted;\n"
-    "    if (frag_pos.x < pos_adjusted.x || frag_pos.x > br.x || frag_pos.y < pos_adjusted.y || frag_pos.y > br.y) discard;\n"
-    "  }\n"
+    "    vec4 fill=do_paint(path.paint_fill,p);\n"
+    "    vec4 stroke=(path.paint_stroke!=0xFFFFFFFFu)?do_paint(path.paint_stroke,p):vec4(0.0);\n"
+    "    return fill*cov+stroke*strokecov;\n"
+    "}\n"
     "\n"
-    "  vec2 rect_center = vec2(\n"
-    "    v_pos_px.x + v_size_px.x * 0.5,\n"
-    "    u_screen_size.y - (v_size_px.y * 0.5 + v_pos_px.y)\n"
-    "  );\n"
-    "  float edge_softness = 2.0;\n"
-    "  float border_softness = 2.0;\n"
-    "  vec4 corner_radius = vec4(v_corner_radius);\n"
-    "  float shadow_softness = 0.0; vec2 shadow_offset = vec2(0.0);\n"
-    "  vec2 half_size = vec2(v_size_px * 0.5);\n"
+    "void main() {\n"
+    "    uint jobIndex = gl_WorkGroupID.x;\n"
+    "    ivec2 local = ivec2(gl_LocalInvocationID.xy);\n"
     "\n"
-    "  float distance = rounded_box_sdf(gl_FragCoord.xy - rect_center, half_size, corner_radius);\n"
-    "  float smoothed_alpha = 1.0 - smoothstep(0.0, edge_softness, distance);\n"
-    "  float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance))\n"
-    "                    : (1.0 - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
+    "    if (jobIndex >= gJobs.length()) return;\n"
+    "    TileJob job = gJobs[jobIndex];\n"
+    "    if (job.path_id >= gPaths.length() || job.path_id >= gMeta.length()) return;\n"
     "\n"
-    "  float shadow_distance = rounded_box_sdf(gl_FragCoord.xy - rect_center + shadow_offset, half_size, corner_radius);\n"
-    "  float shadow_alpha = 1.0 - smoothstep(-shadow_softness, shadow_softness, shadow_distance);\n"
+    "    PathTileMeta meta = gMeta[job.path_id];\n"
+    "    uint tile_index = job.tile_y * meta.tiles_x + job.tile_x;\n"
     "\n"
-    "  vec4 res_color = mix(vec4(0.0), display_color, min(display_color.a, smoothed_alpha));\n"
-    "  if (v_border_width != 0.0) {\n"
-    "    res_color = mix(res_color, v_border_color, min(v_border_color.a, min(border_alpha, smoothed_alpha)));\n"
-    "  }\n"
-    "  o_color = res_color;\n"
+    "\n"
+    "    uint flags = gRanges[tile_index + meta.ranges_off].flags;\n"
+    "    if (false) {\n"
+    "        return;\n"
+    "    }\n"
+    "    else if (false) {\n"
+    "        PathHeader path = gPaths[job.path_id];\n"
+    "        bool want_miter = (path.stroke_flags & 2u) != 0u;\n"
+    "        float offset = path.stroke_width + (want_miter ? path.miter_limit : 0.0);\n"
+    "\n"
+    "        ivec2 p_in_rect = ivec2(\n"
+    "            int(job.tile_x) * 16 + local.x,\n"
+    "            int(job.tile_y) * 16 + local.y\n"
+    "        );\n"
+    "        if (p_in_rect.x >= job.rect_w + int(offset) || p_in_rect.y >= job.rect_h + int(offset)) return;\n"
+    "\n"
+    "        vec2 p = vec2(p_in_rect) - vec2(offset * 0.5);\n"
+    "        ivec2 atlas_px = ivec2(job.base_x + p_in_rect.x, job.base_y + p_in_rect.y);\n"
+    "        imageStore(uAtlas, atlas_px, do_paint(path.paint_fill, p));\n"
+    "    }\n"
+    "    else {\n"
+    "        PathHeader path = gPaths[job.path_id];\n"
+    "        bool want_miter = (path.stroke_flags & 2u) != 0u;\n"
+    "        float offset = path.stroke_width + (want_miter ? path.miter_limit : 0.0);\n"
+    "\n"
+    "        ivec2 p_in_rect = ivec2(\n"
+    "            int(job.tile_x) * meta.tile_size + local.x,\n"
+    "            int(job.tile_y) * meta.tile_size + local.y\n"
+    "        );\n"
+    "        if (p_in_rect.x >= job.rect_w + int(offset) || p_in_rect.y >= job.rect_h + int(offset)) return;\n"
+    "\n"
+    "        vec2 p = vec2(p_in_rect) - vec2(offset * 0.5);\n"
+    "        ivec2 atlas_px = ivec2(job.base_x + p_in_rect.x, job.base_y + p_in_rect.y);\n"
+    "        vec4 col = rasterize_tile_px(p, job.path_id, tile_index);\n"
+    "        imageStore(uAtlas, atlas_px, col);\n"
+    "    }\n"
     "}\n";
 
   // Creating the shader program with the source code of the 
@@ -576,54 +786,82 @@ glEnableVertexAttribArray(12);
   set_projection_matrix(state);
   glUniform1iv(glGetUniformLocation(state->render.shader.id, "u_textures"), RN_MAX_TEX_COUNT_BATCH, tex_slots);
 
-  uint32_t paintId = state->render.vec.paint_cpu_len;
-  vec_reserve_paints(&state->render.vec, 1);
-  RnPaint* p = &state->render.vec.paint_cpu[ state->render.vec.paint_cpu_len++ ];
+  // === 1. Create paints (red fill, yellow stroke) ===
+  uint32_t paintId = state->render.vec.paints.len;
+  DA_RESERVE(&state->render.vec.paints, 1);
+  RnPaint* p = &state->render.vec.paints.data[state->render.vec.paints.len++];
   memset(p, 0, sizeof(*p));
   p->type = 0;
-  p->color[0]=1.0f; p->color[1]=0.0f; p->color[2]=0.0f; p->color[3]=1.0f;
+  p->color[0] = 1.0f; p->color[1] = 0.0f; p->color[2] = 0.0f; p->color[3] = 1.0f; // red fill
+  //
+  uint32_t paintId2 = state->render.vec.paints.len;
+  DA_RESERVE(&state->render.vec.paints, 1);
+  //
+  RnPaint* p2 = &state->render.vec.paints.data[state->render.vec.paints.len++];
+  memset(p2, 0, sizeof(*p2));
+  p2->type = 0;
+  p2->color[0] = 1.0f; p2->color[1] = 1.0f; p2->color[2] = 1.0f; p2->color[3] = 1.0f; // red fill
 
-  float x=100.0f, y=100.0f, w=100.0f, h=100.0f;
-  float cx = x + 0.5f*w;
-  float cy = y + 0.5f*h;
+  // Call this once somewhere in init:
+srand((unsigned)time(NULL)); 
 
-  const float PI = 3.14159265358979323846f;
-  float R = 0.5f * (w < h ? w : h);
-  float r = R * 0.3819660112501051f; 
+// Now build the random shape
+float minx = 0.0f;
+float miny = 0.0f;
+float maxw = 500.0f;
+float maxh = 500.0f;
 
-  float px[20], py[20];
-  for (int i = 0; i < 20; ++i) {
-    float ang = -0.5f*PI + i * (PI/10.0f); 
-    float rad = (i % 2 == 0) ? r : R;          
-    px[i] = cx + rad * cosf(ang);
-    py[i] = cy + rad * sinf(ang); 
-  }
+uint32_t segStart = state->render.vec.segments.len;
+int numSegments = 500;
+DA_RESERVE(&state->render.vec.segments, numSegments);
+RnSegment* s = &state->render.vec.segments.data[segStart];
+int si = 0;
 
-  uint32_t segStart = state->render.vec.seg_cpu_len;
-  vec_reserve_segments(&state->render.vec, 30);
-  RnSegment* s = &state->render.vec.seg_cpu[ segStart ];
-  int si = 0;
+// Generate 500 random points
+float points[501][2];  // +1 to close the shape
+for (int i = 0; i < numSegments; i++) {
+    points[i][0] = minx + (float)(rand() % (int)maxw);
+    points[i][1] = miny + (float)(rand() % (int)maxh);
+}
 
-  for (int i = 0; i < 20; ++i) {
-    int j = (i + 1) % 20;
-    s[si++] = (RnSegment){ 0, px[i], py[i], px[j], py[j], 0,0,0,0,0,0 };
-  }
+// Close the shape: last point = first point
+points[numSegments][0] = points[0][0];
+points[numSegments][1] = points[0][1];
 
-  int innerIdx[11] = { 18, 16, 14, 12, 10, 8, 6, 4, 2, 0, 18};
-  for (int k = 0; k < 10; ++k) {
-    int i0 = innerIdx[k];
-    int i1 = innerIdx[k+1];
+// Create segments between consecutive points
+for (int i = 0; i < numSegments; ++i) {
+    s[si++] = (RnSegment){
+        0, 
+        points[i][0] - minx, points[i][1] - miny,
+        points[i+1][0] - minx, points[i+1][1] - miny,
+        0,0,0,0,0,0
+    };
+}
 
-    s[si++] = (RnSegment){ 0, px[i0], py[i0], px[i1], py[i1], 0,0,0,0,0,0 };
-  }
+  state->render.vec.segments.len += si;
 
-  state->render.vec.seg_cpu_len += si;
+  uint32_t pathId = state->render.vec.paths.len;
+  DA_RESERVE(&state->render.vec.paths, 1);
+  RnPathHeader* ph = &state->render.vec.paths.data[state->render.vec.paths.len++];
+  *ph = (RnPathHeader){
+    .start        = segStart,
+    .count        = (uint32_t)si,
+    .paint_fill   = paintId2,
+    .paint_stroke = UINT32_MAX,
+    .stroke_width = 0.0f,
+    .miter_limit  = 10.0f,
+    .fill_rule    = 0,
+    .stroke_flags = 0};
 
-  uint32_t pathId = state->render.vec.path_cpu_len;
-  vec_reserve_paths(&state->render.vec, 1);
-  RnPathHeader* ph = &state->render.vec.path_cpu[ state->render.vec.path_cpu_len++ ];
-  *ph = (RnPathHeader){ segStart, (uint32_t)si, paintId, UINT32_MAX, 0.0f, 4.0f, 0, 0 };
 
+  state->render.vgcache = (RnVgCachedVectorGraphicList)DA_INIT;
+  rn_vg_compute_init(&state->render.compute, comp_src, 256);
+  rn_vg_init_atlas(&state->render.vgcacheatlas, 1024, 1024, 1, false);
+  RnVgCachedVectorGraphic item = rn_vg_cache_item(&state->render.vgcacheatlas, maxw, maxh, minx, miny, 40,10.0f);
+  DA_PUSH(&state->render.vgcache, item);
+  rn_vg_path_build_tiles(
+    &state->render.vec, 0, 16, &state->render.compute.path_tile_metas,
+    &state->render.compute.path_tile_ranges, &state->render.compute.path_tile_seg_indicies);
 
 }
 
@@ -635,7 +873,6 @@ renderer_flush(RnState* state) {
   // Set the data to draw (the vertices in the current batch)
   glUseProgram(state->render.shader.id);
 
-  vec_sync_bufs(state);
 
   glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo);
   glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(RnVertex) * state->render.vert_count, 
@@ -647,7 +884,7 @@ renderer_flush(RnState* state) {
   }
 
   // Upload the size of the screen to the shader
-  vec2s render_size = (vec2s){(float)state->render_w, (float)state->render_h};
+  vec2s render_size = (vec2s){(float)state->render.render_w, (float)state->render.render_h};
   glUniform2fv(glGetUniformLocation(state->render.shader.id, "u_screen_size"), 1, (float*)render_size.raw);
   glBindVertexArray(state->render.vao);
 
@@ -697,41 +934,11 @@ void create_font_atlas(RnFont* font) {
 }
 
 
-void init_glyph_cache(RnGlyphCache* cache, size_t init_cap) {
-  cache->glyphs = malloc(init_cap * sizeof(*cache->glyphs));
-  cache->size   = 0;
-  cache->cap    = init_cap;
-}
-
-void resize_glyph_cache(RnGlyphCache* cache, size_t new_cap) {
-  RnGlyph* tmp = (RnGlyph*)realloc(cache->glyphs, new_cap * sizeof(*cache->glyphs));
-  if(tmp) {
-    cache->glyphs = tmp;
-    cache->cap = new_cap;
-  } else {
-    RN_ERROR("Failed to allocate memory for glyph in cache.");
-  }
-}
-
-void add_glyph_to_cache(RnGlyphCache* cache, RnGlyph glyph) {
-  if(cache->size == cache->cap) {
-    resize_glyph_cache(cache, cache->cap * 2);
-  }
-  cache->glyphs[cache->size++] = glyph;
-}
-
-void free_glyph_cache(RnGlyphCache* cache) {
-  free(cache->glyphs);
-  cache->glyphs = NULL;
-  cache->size   = 0;
-  cache->cap    = 0;
-}
-
 RnGlyph* get_glyph_from_codepoint(RnGlyphCache cache, RnFont font, uint64_t codepoint) {
-  for(uint32_t i = 0; i < cache.size; i++) {
-    if(cache.glyphs[i].codepoint == codepoint
-      && cache.glyphs[i].font_id == font.id) {
-      return &cache.glyphs[i];
+  for(uint32_t i = 0; i < cache.len; i++) {
+    if(cache.data[i].codepoint == codepoint
+      && cache.data[i].font_id == font.id) {
+      return &cache.data[i];
     }
   }
   return NULL;
@@ -1123,50 +1330,16 @@ RnGlyph get_glyph_from_cache(RnGlyphCache* cache, RnFont* font, uint64_t codepoi
   }
 
   RnGlyph new_glyph = load_colr_glyph_from_codepoint(font, codepoint);
-  add_glyph_to_cache(cache, new_glyph);
+  DA_PUSH(cache, new_glyph);
   return new_glyph; 
-}
-
-
-void init_hb_cache(RnHarfbuzzCache* cache, size_t init_cap) {
-  cache->texts  = malloc(init_cap * sizeof(**cache->texts));
-  cache->size   = 0;
-  cache->cap    = init_cap;
-}
-
-void resize_hb_cache(RnHarfbuzzCache* cache, size_t new_cap) {
-  RnHarfbuzzText** tmp = (RnHarfbuzzText**)realloc(cache->texts, new_cap * sizeof(**cache->texts));
-  if(tmp) {
-    cache->texts = tmp;
-    cache->cap = new_cap;
-  } else {
-    RN_ERROR("Failed to allocate memory for harfbuzz text in cache.");
-  }
-
-}
-void add_text_to_hb_cache(RnHarfbuzzCache* cache, RnHarfbuzzText* text) {
-  if(cache->size == cache->cap) {
-    resize_hb_cache(cache, cache->cap * 2);
-  }
-  cache->texts[cache->size++] = text;
-}
-
-void free_hb_cache(RnHarfbuzzCache* cache) {
-  for(uint32_t i = 0; i < cache->size; i++) {
-    hb_buffer_destroy(cache->texts[i]->buf);
-  }
-  free(cache->texts);
-  cache->texts  = NULL;
-  cache->size   = 0;
-  cache->cap    = 0;
 }
 
 RnHarfbuzzText* get_hb_text_from_str(RnHarfbuzzCache cache, RnFont font, const char* str) {
   uint64_t hash = djb2_hash((unsigned char*)str);
-  for(uint32_t i = 0; i < cache.size; i++) {
-    if(cache.texts[i]->hash == hash && 
-      cache.texts[i]->font_id == font.id) {
-      return cache.texts[i];
+  for(uint32_t i = 0; i < cache.len; i++) {
+    if(cache.data[i]->hash == hash && 
+      cache.data[i]->font_id == font.id) {
+      return cache.data[i];
     }
   }
   return NULL;
@@ -1218,7 +1391,7 @@ RnHarfbuzzText* get_hb_text_from_cache(RnHarfbuzzCache* cache, RnFont font, cons
   }
 
   RnHarfbuzzText* new_text = load_hb_text_from_str(font, str);
-  add_text_to_hb_cache(cache, new_text);
+  DA_PUSH(cache, new_text);
   return new_text; 
 }
 
@@ -1254,8 +1427,8 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
   }
 
   // Set default state
-  state->render_w = render_w;
-  state->render_h = render_h;
+  state->render.render_w = render_w;
+  state->render.render_h = render_h;
   state->render.tex_count = 0;
   state->drawcalls = 0;
 
@@ -1271,8 +1444,8 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
     return state;
   }
 
-  init_glyph_cache(&state->glyph_cache, 32);
-  init_hb_cache(&state->hb_cache, 32);
+  state->glyph_cache = (RnGlyphCache)DA_INIT;
+  state->hb_cache = (RnHarfbuzzCache)DA_INIT;
 
   state->init = true;
 
@@ -1282,8 +1455,8 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
 void 
 rn_terminate(RnState* state) {
   // Free glyph- & harfbuzz-caches
-  free_glyph_cache(&state->glyph_cache);
-  free_hb_cache(&state->hb_cache);
+  DA_FREE(&state->glyph_cache);
+  DA_FREE(&state->hb_cache);
 
   // Terminate freetype
   FT_Done_FreeType(state->ft);
@@ -1294,8 +1467,8 @@ rn_terminate(RnState* state) {
 void
 rn_resize_display(RnState* state, uint32_t render_w, uint32_t render_h) {
   // Set render dimensions
-  state->render_w = render_w;
-  state->render_h = render_h;
+  state->render.render_w = render_w;
+  state->render.render_h = render_h;
 
   // Send the dimension chnage to OpenGL 
   glViewport(0, 0, render_w, render_h);
@@ -1612,9 +1785,35 @@ rn_clear_color_base_types(
 }
 
 void
-rn_begin(RnState* state) {
+rn_begin_batch(RnState* state) {
   renderer_begin(state);
   state->drawcalls = 0;
+}
+
+void rn_begin(RnState* state) {
+  rn_vg_sync_csr(
+    &state->render.compute, 
+    &state->render.compute.path_tile_metas, 
+    &state->render.compute.path_tile_ranges, 
+    &state->render.compute.path_tile_seg_indicies);
+
+  RnVgTileJobList jobs = DA_INIT;
+  rn_vg_collect_dirty_tile_jobs(
+    &state->render.vgcacheatlas,
+    &state->render.vgcache,
+    &state->render.compute.path_tile_metas,
+    &jobs);
+
+  vec_sync_bufs(state);
+
+  rn_vg_compute_update(
+    &state->render.compute,
+    &state->render.vgcacheatlas,
+    &jobs);
+
+  DA_FREE(&jobs);
+
+  rn_begin_batch(state); 
 }
 
 void
@@ -1688,8 +1887,6 @@ rn_add_vertex_ex(
 
   vertex->max_coord[0] = state->cull_end.x;
   vertex->max_coord[1] = state->cull_end.y;
-  
-  vertex->path_id = 0; 
 
   state->render.vert_count++;
 
@@ -1758,8 +1955,26 @@ rn_add_vertex(
 }
 
 void
-rn_end(RnState* state) {
+rn_end_batch(RnState* state) {
   renderer_flush(state);
+}
+
+void 
+rn_end(RnState* state) {
+  for(uint32_t i = 0; i < state->render.vgcache.len; i++) {
+    RnVgCachedVectorGraphic item = state->render.vgcache.data[i];
+    vec2s texcoords[4] = { 
+      (vec2s){item.u0, item.v0}, 
+      (vec2s){item.u1, item.v0}, 
+      (vec2s){item.u1, item.v1}, 
+      (vec2s){item.u0, item.v1} 
+    };
+    vec2s draw_pos = { item.posx, item.posy };
+    RnTexture tex = { .id = state->render.vgcacheatlas.texid, .width = state->render.vgcacheatlas.w, .height = state->render.vgcacheatlas.h};
+    rn_image_render(state, draw_pos, RN_WHITE, tex);  
+  }
+
+  rn_end_batch(state);
 }
 
 void
@@ -1775,8 +1990,8 @@ rn_reload_font_glyph_cache(RnState* state, RnFont* font) {
   glDeleteTextures(1, &font->atlas_id);
   create_font_atlas(font);
 
-  for(uint32_t i = 0; i < state->glyph_cache.size; i++) {
-    RnGlyph* glyph = &state->glyph_cache.glyphs[i];
+  for(uint32_t i = 0; i < state->glyph_cache.len; i++) {
+    RnGlyph* glyph = &state->glyph_cache.data[i];
     if(glyph->font_id == font->id) {
       *glyph = load_colr_glyph_from_codepoint(font, glyph->codepoint);
     }
@@ -1786,8 +2001,8 @@ rn_reload_font_glyph_cache(RnState* state, RnFont* font) {
 void 
 rn_reload_font_harfbuzz_cache(RnState* state, RnFont font) {
   RnHarfbuzzText* text = NULL, *tmp = NULL;
-  for(uint32_t i = 0; i < state->hb_cache.size; i++) {
-    RnHarfbuzzText* text = state->hb_cache.texts[i];
+  for(uint32_t i = 0; i < state->hb_cache.len; i++) {
+    RnHarfbuzzText* text = state->hb_cache.data[i];
     if(text->font_id == font.id) {
       hb_buffer_destroy(text->buf);
       free(text);
@@ -1808,10 +2023,10 @@ rn_rect_render_ex(
   float corner_radius) {
 
 
-pos.x = floorf(pos.x + 0.5f);
-pos.y = floorf(pos.y + 0.5f);
-size.x = floorf(size.x + 0.5f);
-size.y = floorf(size.y + 0.5f);
+  pos.x = floorf(pos.x + 0.5f);
+  pos.y = floorf(pos.y + 0.5f);
+  size.x = floorf(size.x + 0.5f);
+  size.y = floorf(size.y + 0.5f);
 
   vec2s pos_initial = pos;
   // Change the position in a way that the given  
@@ -1820,12 +2035,12 @@ size.y = floorf(size.y + 0.5f);
 
   // Position is 0 if the quad has corners
   vec2s pos_matrix = {corner_radius != 0.0f ? 
-    (float)state->render_w / 2.0f : pos.x, 
-    corner_radius != 0.0f ? (float)state->render_h / 2.0f : pos.y};
+    (float)state->render.render_w / 2.0f : pos.x, 
+    corner_radius != 0.0f ? (float)state->render.render_h / 2.0f : pos.y};
 
   // Size is 0 if the quad has corners
-  vec2s size_matrix = {corner_radius != 0.0f ? state->render_w : size.x, 
-    corner_radius != 0.0f ? state->render_h : size.y};
+  vec2s size_matrix = {corner_radius != 0.0f ? state->render.render_w : size.x, 
+    corner_radius != 0.0f ? state->render.render_h : size.y};
 
   // Calculating the transform matrix
   mat4 transform;
@@ -2027,9 +2242,9 @@ RnTextProps rn_text_render_ex(RnState* state,
 
   float textheight = 0;
 
-    float scale = 1.0f;
-    if (font->selected_strike_size)
-      scale = ((float)font->size / (float)font->selected_strike_size);
+  float scale = 1.0f;
+  if (font->selected_strike_size)
+    scale = ((float)font->size / (float)font->selected_strike_size);
   for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
     // Get the glyph from the glyph index
     RnGlyph glyph =  rn_glyph_from_codepoint(
@@ -2534,4 +2749,448 @@ RnColor rn_color_from_zto(vec4s zto) {
 
 vec4s rn_color_to_zto(RnColor color) {
   return (vec4s){color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, color.a / 255.0f};
+}
+
+bool 
+rn_vg_init_atlas(RnVgCachingAtlas* atlas, uint32_t width, uint32_t height, uint32_t gutter, bool srgb) {
+  if(!atlas) return false;
+  memset(atlas, 0, sizeof(*atlas));
+
+  atlas->w = width;
+  atlas->h = height;
+  atlas->gutter = gutter;
+
+  glCreateTextures(GL_TEXTURE_2D, 1, &atlas->texid);
+  GLenum fmt = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+  glTextureStorage2D(atlas->texid, 1, fmt, width, height);
+  const uint8_t zero[4] = {0,0,0,0};
+  glClearTexImage(atlas->texid, 0, GL_RGBA, GL_UNSIGNED_BYTE, zero);
+
+
+
+  glTextureParameteri(atlas->texid, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTextureParameteri(atlas->texid, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTextureParameteri(atlas->texid, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTextureParameteri(atlas->texid, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  const float border[4] = {0,0,0,0};
+  glTextureParameterfv(atlas->texid, GL_TEXTURE_BORDER_COLOR, border);
+
+  glCreateFramebuffers(1, &atlas->fboid);
+  glNamedFramebufferTexture(atlas->fboid, GL_COLOR_ATTACHMENT0, atlas->texid, 0);
+
+  ls_atlas_init(&atlas->binpack, (ls_vec2d){.x = (uint16_t)width, .y = (uint16_t)height});
+
+  return true;
+}
+
+void 
+rn_vg_destroy_atlas(RnVgCachingAtlas* atlas) {
+  if(!atlas) return;
+  if(atlas->fboid) { 
+    glDeleteFramebuffers(1, &atlas->fboid); 
+    atlas->fboid = 0;
+  }
+  if(atlas->texid) { 
+    glDeleteTextures(1, &atlas->texid); 
+    atlas->texid = 0;
+  }
+  memset(atlas, 0, sizeof(*atlas));
+}
+void rn_vg_update_item_uvs(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* item) {
+  float gx = atlas->gutter;
+  float w  = item->contentw;
+  float h  = item->contenth;
+
+  item->u0 = (item->atlasx + gx + 0.5f) / atlas->w;
+  item->v0 = (item->atlasy + gx + 0.5f) / atlas->h;
+  item->u1 = (item->atlasx + gx + w - 0.5f) / atlas->w;
+  item->v1 = (item->atlasy + gx + h - 0.5f) / atlas->h;
+}
+
+RnVgCachedVectorGraphic rn_vg_cache_item(RnVgCachingAtlas* atlas, uint32_t w, uint32_t h, float posx, float posy, float stroke_w, float miter_limit) {
+  if(!atlas) return (RnVgCachedVectorGraphic){0};
+
+  RnVgCachedVectorGraphic item = {0};
+  float packed_x, packed_y;
+
+  ls_vec2d req = { (uint16_t)(w + 2*atlas->gutter),
+    (uint16_t)(h + 2*atlas->gutter) };
+
+  if(item.in_atlas && item.atlasw >= req.x && item.atlash >= req.y) {
+    item.contentw = w; 
+    item.contenth = h; 
+    rn_vg_update_item_uvs(atlas, &item);
+    item.dirty = true;
+    return item;
+  }
+
+  ls_atlas_push_rect(&atlas->binpack, &packed_x, &packed_y, req);
+  item.atlasx   = (int)packed_x;
+  item.atlasy   = (int)packed_y;
+  item.contentw = w;
+  item.contenth = h;
+
+  item.posx = posx; 
+  item.posy = posy;
+  item.stroke_w = stroke_w;
+
+  item.bucket_id = atlas->texid;
+  item.path_id = 0;
+  item.dirty = true;
+  item.in_atlas = true;
+  rn_vg_update_item_uvs(atlas, &item);
+
+  return item;
+}
+
+void 
+rn_vg_collect_dirty(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* items, uint32_t nitems, RnVgDirtyRectList_Compute* o_list) {
+  for(uint32_t i = 0; i < nitems; i++) {
+    RnVgCachedVectorGraphic* item = &items[i];
+    if(!item->in_atlas || !item->dirty) continue;
+    int ix = item->atlasx + atlas->gutter;
+    int iy = item->atlasy + atlas->gutter;
+    int iw = item->contentw + item->stroke_w + atlas->gutter + 1; 
+    int ih = item->contenth + item->stroke_w + atlas->gutter + 1;
+
+    RnVgDirtyRect_Compute r = { ix, iy, iw, ih, item->path_id, {0,0,0} };
+    DA_PUSH(o_list, r);
+
+    item->dirty = false;
+  }
+}
+bool 
+rn_vg_compute_init(RnVgState_Compute* state, const char* compute_src, uint32_t init_cap) {
+  if(!state) return false;
+  memset(state, 0, sizeof(*state));
+  state->tile_size = 16;
+  state->compute_program = create_compute_program(compute_src);
+  if(!state->compute_program) return false;
+
+  glCreateBuffers(1, &state->meta_ssbo);
+  glCreateBuffers(1, &state->range_ssbo);
+  glCreateBuffers(1, &state->index_ssbo);
+
+  state->meta_cap   = 0;
+  state->range_cap  = 0;
+  state->index_cap  = 0;
+
+  state->path_tile_seg_indicies = (RnUintList)DA_INIT;
+  state->path_tile_ranges = (RnVgTilePathRangeList)DA_INIT;
+  state->path_tile_metas = (RnVgPathTileMetaList)DA_INIT;
+
+  state->need_shader_upload = true;
+
+  glNamedBufferData(state->meta_ssbo,   1, NULL, GL_DYNAMIC_DRAW);
+  glNamedBufferData(state->range_ssbo,  1, NULL, GL_DYNAMIC_DRAW);
+  glNamedBufferData(state->index_ssbo,  1, NULL, GL_DYNAMIC_DRAW);
+
+  glCreateBuffers(1, &state->job_ssbo);
+  state->job_cap = init_cap ? init_cap : 4096; 
+  glNamedBufferData(state->job_ssbo, state->job_cap*sizeof(RnVgTileJob), NULL, GL_DYNAMIC_DRAW);
+
+  return true;
+}
+
+void 
+rn_vg_compute_update(RnVgState_Compute* state, const RnVgCachingAtlas* atlas, const RnVgTileJobList* jobs) {
+  if (jobs->len == 0) return;
+
+  glBindImageTexture(0, atlas->texid, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+
+  ensure_gpu_ssbo(state->job_ssbo, &state->job_cap, jobs->len * sizeof(RnVgTileJob));
+
+  glNamedBufferSubData(state->job_ssbo, 0, jobs->len*sizeof(RnVgTileJob), jobs->data);
+
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, state->meta_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, state->range_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, state->index_ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, state->job_ssbo);
+
+  glUseProgram(state->compute_program);
+  glDispatchCompute(jobs->len, 1, 1); 
+  glMemoryBarrier(GL_ALL_BARRIER_BITS);
+}
+
+RnAABB 
+rn_vg_segment_get_aabb(RnSegment segment, float pad) {
+  float minx = MIN(segment.x0, segment.x1) - pad;
+  float miny = MIN(segment.y0, segment.y1) - pad;
+  float maxx  = MAX(segment.x0, segment.x1) + pad;
+  float maxy = MAX(segment.y0, segment.y1) + pad;
+
+  return (RnAABB){
+    .minx = minx, 
+    .miny = miny, 
+    .maxx = maxx, 
+    .maxy =  maxy 
+  };
+}
+
+
+RnTileStatus get_tile_status(
+  const RnPathHeader* path,
+  float tile_x, float tile_y,
+  float tile_size,
+  const RnVgSegmentList* segments, const RnUintList* indices,
+  uint32_t start, uint32_t end
+) {
+  vec2s corners[4] = {
+    { tile_x,             tile_y },
+    { tile_x+tile_size,   tile_y },
+    { tile_x,             tile_y+tile_size },
+    { tile_x+tile_size,   tile_y+tile_size }
+  };
+  int winding_state[4];
+  const float eps = 1e-6f;
+
+  float tminx = tile_x, tminy = tile_y;
+  float tmaxx = tile_x + tile_size, tmaxy = tile_y + tile_size;
+  float stroke = path->stroke_width; 
+  bool stroke_hits = false;
+
+  // first checking if stroke hits tile, because then, this tile is NOT empty 
+  for (uint32_t i = start; i < end; ++i) {
+    const RnSegment* s = &segments->data[indices->data[i]];
+    if (s->type != 0) continue;
+    float minx = fminf(s->x0, s->x1) - stroke;
+    float miny = fminf(s->y0, s->y1) - stroke;
+    float maxx = fmaxf(s->x0, s->x1) + stroke;
+    float maxy = fmaxf(s->y0, s->y1) + stroke;
+    if (!(maxx < tminx || minx > tmaxx || maxy < tminy || miny > tmaxy)) {
+      stroke_hits = true; 
+    }
+  }
+
+  // for every corner of the tile, we cast a horizontal ray to every segments that is given.
+  // using this ray approach, we do the winding calculation like in the compute shader. 
+  // when all corners of the tile resulted in the same winding state, this means the 
+  // tile is either fully empty or fully filled.
+  // if the winding states do not agree, it means the tile is partially filled.
+  for (int c = 0; c < 4; ++c) {
+    vec2s p = corners[c];
+    int winding = 0, eo = 0;
+
+    for (uint32_t i = start; i < end; ++i) {
+      const RnSegment* s = &segments->data[indices->data[i]];
+      if (s->type != 0) continue;
+      float dy = s->y1 - s->y0;
+      if (fabsf(dy) < eps) continue;
+      bool up   = (s->y0 <= p.y + eps && s->y1 > p.y + eps);
+      bool down = (s->y1 <= p.y + eps && s->y0 > p.y + eps);
+
+      if (up || down) {
+        float t = (p.y - s->y0) / dy;
+        float x = s->x0 + t * (s->x1 - s->x0);
+        if (x > p.x) {
+          winding += (up ? 1 : -1);
+          eo = (eo == 0) ? 1 : 0;
+        }
+      }
+    }
+    winding_state[c] = (path->fill_rule == 0) ? (eo == 1) : (winding != 0);
+    if (c > 0 && winding_state[c] != winding_state[0]) {
+      return RN_TILE_MIXED; 
+    }
+  }
+
+  if (stroke_hits) {
+    return RN_TILE_MIXED;
+  }
+  return (winding_state[0] == 1) ? RN_TILE_FULL : RN_TILE_EMPTY;
+}
+
+void rn_vg_path_accumulate_rows_csr(
+  RnVgState* state,
+  uint32_t path_id,
+  uint32_t n_tiles_x,
+  uint32_t n_tiles_y,
+  float path_x,
+  float path_y,
+  uint32_t tilesize,
+  RnVgTilePathRangeList* ranges,
+  RnUintList* indices)
+{
+  RnPathHeader path = state->paths.data[path_id];
+
+  uint32_t row_start[n_tiles_y]; 
+  uint32_t row_count[n_tiles_y]; 
+
+  for (uint32_t row_y = 0; row_y < n_tiles_y; row_y++) {
+    row_start[row_y] = indices->len;
+    for (uint32_t i = 0; i < path.count; ++i) {
+      RnSegment seg = state->segments.data[path.start + i];
+      RnAABB aabb = rn_vg_segment_get_aabb(seg, path.stroke_width / 2.0f);
+
+      // needs to happen (idy why)
+      aabb.miny -= path.stroke_width / 2.0f;
+
+      int seg_top = (int)floorf((aabb.miny - path_y) / (float)tilesize);
+      int seg_bot = (int)floorf((aabb.maxy - path_y) / (float)tilesize);
+
+      DA_PUSH(indices, path.start + i);
+    }
+
+    row_count[row_y] = indices->len - row_start[row_y];
+  }
+
+  for (uint32_t ty = 0; ty < n_tiles_y; ++ty) {
+    for (uint32_t tx = 0; tx < n_tiles_x; ++tx) {
+      uint32_t start = row_start[ty];
+      uint32_t end   = start + row_count[ty];
+
+      RnTileStatus status = get_tile_status(
+        &path,
+        path_x + tx * tilesize,
+        path_y + ty * tilesize,
+        (float)tilesize,
+        &state->segments,
+        indices,
+        start,
+        end
+      );
+
+      RnVgCSRTileRange r = {
+        .start = start,
+        .count = row_count[ty],
+        .flags = status
+      };
+      DA_PUSH(ranges, r);
+    }
+  }
+}
+
+
+
+void rn_vg_path_build_tiles(
+  RnVgState* state, 
+  uint32_t path_id,
+  uint32_t tilesize,
+  RnVgPathTileMetaList* metas, 
+  RnVgTilePathRangeList* ranges,
+  RnUintList* indices)
+{
+  RnPathHeader path = state->paths.data[path_id];
+  float pad = ceilf(path.stroke_width / 2.0f + (path.stroke_flags & RN_STROKE_JOIN_MITER) ? path.miter_limit : 0); 
+
+  RnAABB path_aabb = { FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX };
+  for (uint32_t i = 0; i < path.count; i++) {
+    RnSegment seg = state->segments.data[path.start + i];
+    RnAABB seg_aabb = rn_vg_segment_get_aabb(seg, pad);
+    path_aabb.minx = MIN(path_aabb.minx, seg_aabb.minx);
+    path_aabb.miny = MIN(path_aabb.miny, seg_aabb.miny);
+    path_aabb.maxx = MAX(path_aabb.maxx, seg_aabb.maxx);
+    path_aabb.maxy = MAX(path_aabb.maxy, seg_aabb.maxy);
+  }
+
+  if (path_aabb.minx > path_aabb.maxx || path_aabb.miny > path_aabb.maxy) {
+    RnVgPathTileMeta meta = {0};
+    meta.tiles_x = meta.tiles_y = 0;
+    meta.built = true;
+    meta.tile_size = tilesize;
+    DA_INSERT(metas, path_id, meta);
+    return;
+  }
+
+  uint32_t n_tiles_x = (uint32_t)((path_aabb.maxx - path_aabb.minx + tilesize - 1) / tilesize);
+  uint32_t n_tiles_y = (uint32_t)((path_aabb.maxy - path_aabb.miny + tilesize - 1) / tilesize);
+  uint32_t total_tiles = n_tiles_x * n_tiles_y;
+
+  RnUintList segs_per_tile[total_tiles]; 
+  for (uint32_t i = 0; i < total_tiles; i++) segs_per_tile[i] = (RnUintList)DA_INIT;
+
+  DA_RESERVE(ranges, ranges->len + total_tiles);
+  RnVgPathTileMeta meta = {0};
+  meta.ranges_off = ranges->len;
+  meta.tiles_x = n_tiles_x;
+  meta.tiles_y = n_tiles_y;
+  meta.tile_size = tilesize; 
+  meta.total_ranges = total_tiles;
+  meta.built = true;
+
+  size_t base_range  = ranges->len;
+  size_t base_index  = indices->len;
+  rn_vg_path_accumulate_rows_csr(
+    state, path_id, n_tiles_x, n_tiles_y,
+    path_aabb.minx, path_aabb.miny, tilesize, ranges, indices 
+  );
+
+  meta.ranges_off    = (uint32_t)base_range;
+  meta.total_ranges  = n_tiles_x * n_tiles_y;
+  meta.built = true;
+
+  for (uint32_t i = 0; i < total_tiles; i++) DA_FREE(&segs_per_tile[i]);
+
+  DA_INSERT(metas, path_id, meta);
+}
+
+void rn_vg_collect_dirty_tile_jobs(
+  const RnVgCachingAtlas* atlas, 
+  const RnVgCachedVectorGraphicList* items,
+  const RnVgPathTileMetaList* metas, 
+  RnVgTileJobList* o_jobs) {
+  if(!o_jobs) return;
+  DA_CLEAR(o_jobs);
+  for(uint32_t i = 0; i < items->len; i++) {
+    const RnVgCachedVectorGraphic* item = &items->data[i];
+    if(!item->in_atlas || !item->dirty) continue;
+    const RnVgPathTileMeta meta = metas->data[item->path_id];
+    if(!meta.built || meta.tiles_x == 0 || meta.tiles_y == 0) continue;
+
+    int ix = item->atlasx + atlas->gutter;
+    int iy = item->atlasy + atlas->gutter;
+    int iw = (int)meta.tiles_x * (int)meta.tile_size;
+    int ih = (int)meta.tiles_y * (int)meta.tile_size;
+    for (uint32_t y = 0; y < meta.tiles_y; y++) {
+      for (uint32_t x = 0; x < meta.tiles_x; x++) {
+        RnVgTileJob job = { 
+          .base_x = ix, .base_y = iy, 
+          .rect_w = iw, .rect_h = ih, 
+          .path_id = item->path_id, 
+          .tile_x =  x, .tile_y = y,
+          ._pad = 0 // ingore
+        };
+        DA_PUSH(o_jobs, job);
+      }
+    }
+  }
+}
+
+void rn_vg_sync_csr(RnVgState_Compute* state,
+                    const RnVgPathTileMetaList* metas_cpu,
+                    const RnVgTilePathRangeList* ranges_cpu,
+                    const RnUintList* indices_cpu) {
+  if (!state->need_shader_upload) return; 
+
+  size_t meta_count  = metas_cpu->len;
+  size_t range_count = ranges_cpu->len;
+  size_t index_count = indices_cpu->len;
+
+  size_t meta_bytes  = meta_count  * sizeof(RnVgPathTileMeta_GPU);
+  size_t range_bytes = range_count * sizeof(RnVgCSRTileRange);
+  size_t index_bytes = index_count * sizeof(uint32_t);
+
+  RnVgPathTileMeta_GPU* metas_gpu = NULL;
+  if (meta_count > 0) {
+    metas_gpu = malloc(meta_bytes);
+    for (uint32_t i = 0; i < meta_count; i++) {
+      RnVgPathTileMeta m = metas_cpu->data[i];
+      metas_gpu[i] = (RnVgPathTileMeta_GPU){
+        m.tiles_x, m.tiles_y, m.tile_size,
+        m.ranges_off, 
+        m.total_ranges, 
+        m.built ? 1u : 0u
+      };
+    }
+  }
+  ensure_gpu_ssbo(state->meta_ssbo,  &state->meta_cap,  meta_bytes);
+  ensure_gpu_ssbo(state->range_ssbo, &state->range_cap, range_bytes);
+  ensure_gpu_ssbo(state->index_ssbo, &state->index_cap, index_bytes);
+
+  if (meta_bytes  > 0) glNamedBufferSubData(state->meta_ssbo,  0, meta_bytes,  metas_gpu);
+  if (range_bytes > 0) glNamedBufferSubData(state->range_ssbo, 0, range_bytes, ranges_cpu->data);
+  if (index_bytes > 0) glNamedBufferSubData(state->index_ssbo, 0, index_bytes, indices_cpu->data);
+
+  free(metas_gpu);
+  state->need_shader_upload = false;
 }
