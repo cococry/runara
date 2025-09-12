@@ -1818,8 +1818,9 @@ void rn_vg_path_build_tiles(
     RnUintList* indices);
 
 void rn_vg_collect_dirty_tile_jobs(
+    RnState* state,
     const RnVgCachingAtlas* atlas, 
-    const RnVgCachedVectorGraphicList* items,
+    RnVgCachedVectorGraphicList* items,
     const RnVgPathTileMetaList* metas, 
     RnVgTileJobList* o_jobs);
 

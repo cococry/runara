@@ -1,7 +1,7 @@
 CC=gcc
 INCS=`pkg-config --cflags glfw3 cglm freetype2` -Ivendor/glad/include -Ivendor/stb_image/ -Ivendor/linesky
 LIBS=-lm -lGL -lfreetype -lharfbuzz 
-CFLAGS+=${INCS} -O3 -ffast-math -Wno-stringop-overflow
+CFLAGS+=${INCS} -march=native -O3 -ffast-math -Wno-stringop-overflow
 
 # Compilation target (does NOT install anything)
 all: lib/librunara.a

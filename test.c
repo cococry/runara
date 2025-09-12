@@ -77,26 +77,28 @@ void renderframebuffer(
 int main() {
   glfwInit();
 
-  GLFWwindow* window = glfwCreateWindow(500, 500, "Hello, World!", NULL, NULL);
+  GLFWwindow* window = glfwCreateWindow(1000, 1000, "Hello, World!", NULL, NULL);
 
   glfwSetFramebufferSizeCallback(window, resizecb);
 
   glfwMakeContextCurrent(window);
 
   // Initialize your state of the library
-  state = rn_init(500, 500, (RnGLLoader)glfwGetProcAddress);
+
+    float before = glfwGetTime(); 
+  state = rn_init(1000, 1000, (RnGLLoader)glfwGetProcAddress);
+
+    float after = glfwGetTime(); 
+    float dt = after - before; 
+      printf("dt: %f\n", dt);
 
 
-
-  float dt = 0.0f, lt = 0.0f;
+    float ct = glfwGetTime();
   while(!glfwWindowShouldClose(window)) {
     glClear(GL_COLOR_BUFFER_BIT);
     vec4s col = rn_color_to_zto(rn_color_from_hex(0x101010));
     glClearColor(col.r, col.g, col.b, col.a);
 
-    float ct = glfwGetTime();
-    dt = ct - lt;
-    lt = ct;
     // Beginning a rende pass with Runara
     //
 

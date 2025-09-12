@@ -6,6 +6,7 @@
 #include "include/runara/runara.h"
 
 #include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -729,10 +730,10 @@ renderer_init(RnState* state) {
     "\n"
     "\n"
     "    uint flags = gRanges[tile_index + meta.ranges_off].flags;\n"
-    "    if (false) {\n"
+    "    if (flags == RN_TILE_EMPTY) {\n"
     "        return;\n"
     "    }\n"
-    "    else if (false) {\n"
+    "    else if (flags == RN_TILE_FULL) {\n"
     "        PathHeader path = gPaths[job.path_id];\n"
     "        bool want_miter = (path.stroke_flags & 2u) != 0u;\n"
     "        float offset = path.stroke_width + (want_miter ? path.miter_limit : 0.0);\n"
@@ -785,84 +786,82 @@ renderer_init(RnState* state) {
   glUseProgram(state->render.shader.id);
   set_projection_matrix(state);
   glUniform1iv(glGetUniformLocation(state->render.shader.id, "u_textures"), RN_MAX_TEX_COUNT_BATCH, tex_slots);
-
   // === 1. Create paints (red fill, yellow stroke) ===
-  uint32_t paintId = state->render.vec.paints.len;
-  DA_RESERVE(&state->render.vec.paints, 1);
-  RnPaint* p = &state->render.vec.paints.data[state->render.vec.paints.len++];
-  memset(p, 0, sizeof(*p));
-  p->type = 0;
-  p->color[0] = 1.0f; p->color[1] = 0.0f; p->color[2] = 0.0f; p->color[3] = 1.0f; // red fill
-  //
-  uint32_t paintId2 = state->render.vec.paints.len;
-  DA_RESERVE(&state->render.vec.paints, 1);
-  //
-  RnPaint* p2 = &state->render.vec.paints.data[state->render.vec.paints.len++];
-  memset(p2, 0, sizeof(*p2));
-  p2->type = 0;
-  p2->color[0] = 1.0f; p2->color[1] = 1.0f; p2->color[2] = 1.0f; p2->color[3] = 1.0f; // red fill
+uint32_t paintId = state->render.vec.paints.len;
+DA_RESERVE(&state->render.vec.paints, 1);
+RnPaint* p = &state->render.vec.paints.data[state->render.vec.paints.len++];
+memset(p, 0, sizeof(*p));
+p->type = 0;
+p->color[0] = 1.0f; p->color[1] = 0.0f; p->color[2] = 0.0f; p->color[3] = 1.0f; // red fill
 
-  // Call this once somewhere in init:
-srand((unsigned)time(NULL)); 
+uint32_t paintId2 = state->render.vec.paints.len;
+DA_RESERVE(&state->render.vec.paints, 1);
+RnPaint* p2 = &state->render.vec.paints.data[state->render.vec.paints.len++];
+memset(p2, 0, sizeof(*p2));
+p2->type = 0;
+p2->color[0] = 1.0f; p2->color[1] = 1.0f; p2->color[2] = 0.0f; p2->color[3] = 1.0f; // yellow stroke
 
-// Now build the random shape
+// === 2. Zigzag points ===
 float minx = 0.0f;
 float miny = 0.0f;
-float maxw = 500.0f;
-float maxh = 500.0f;
+float maxw = 1000.0f;
+float maxh = 1000.0f;
+
+int numSegments = 2500; // total zigzag segments
+DA_RESERVE(&state->render.vec.segments, numSegments);
+
+float dx = maxw / (numSegments / 2);  // horizontal step for each zigzag
+float x = minx;
+float yTop = miny;
+float yBottom = miny + maxh;
 
 uint32_t segStart = state->render.vec.segments.len;
-int numSegments = 500;
-DA_RESERVE(&state->render.vec.segments, numSegments);
-RnSegment* s = &state->render.vec.segments.data[segStart];
-int si = 0;
-
-// Generate 500 random points
-float points[501][2];  // +1 to close the shape
 for (int i = 0; i < numSegments; i++) {
-    points[i][0] = minx + (float)(rand() % (int)maxw);
-    points[i][1] = miny + (float)(rand() % (int)maxh);
-}
+    float x0 = x;
+    float y0 = (i % 2 == 0) ? yTop : yBottom;
+    x += dx;
+    float x1 = x;
+    float y1 = (i % 2 == 0) ? yBottom : yTop;
 
-// Close the shape: last point = first point
-points[numSegments][0] = points[0][0];
-points[numSegments][1] = points[0][1];
-
-// Create segments between consecutive points
-for (int i = 0; i < numSegments; ++i) {
-    s[si++] = (RnSegment){
-        0, 
-        points[i][0] - minx, points[i][1] - miny,
-        points[i+1][0] - minx, points[i+1][1] - miny,
-        0,0,0,0,0,0
+    RnSegment seg = {
+        .x0 = x0,
+        .y0 = y0,
+        .x1 = x1,
+        .y1 = y1
     };
+    DA_PUSH(&state->render.vec.segments, seg);
 }
 
-  state->render.vec.segments.len += si;
-
-  uint32_t pathId = state->render.vec.paths.len;
-  DA_RESERVE(&state->render.vec.paths, 1);
-  RnPathHeader* ph = &state->render.vec.paths.data[state->render.vec.paths.len++];
-  *ph = (RnPathHeader){
+// === 3. Path header ===
+uint32_t pathId = state->render.vec.paths.len;
+DA_RESERVE(&state->render.vec.paths, 1);
+RnPathHeader* ph = &state->render.vec.paths.data[state->render.vec.paths.len++];
+*ph = (RnPathHeader){
     .start        = segStart,
-    .count        = (uint32_t)si,
-    .paint_fill   = paintId2,
+    .count        = (uint32_t)numSegments,  // *** Updated for zigzag ***
+    .paint_fill   = paintId,
     .paint_stroke = UINT32_MAX,
     .stroke_width = 0.0f,
     .miter_limit  = 10.0f,
     .fill_rule    = 0,
-    .stroke_flags = 0};
+    .stroke_flags = 0
+};
 
+// === 4. Build tiles ===
+state->render.vgcache = (RnVgCachedVectorGraphicList)DA_INIT;
+rn_vg_compute_init(&state->render.compute, comp_src, 256);
+rn_vg_init_atlas(&state->render.vgcacheatlas, 1024, 1024, 1, false);
+RnVgCachedVectorGraphic item = rn_vg_cache_item(&state->render.vgcacheatlas, maxw, maxh, minx, miny, 40, 10.0f);
+DA_PUSH(&state->render.vgcache, item);
 
-  state->render.vgcache = (RnVgCachedVectorGraphicList)DA_INIT;
-  rn_vg_compute_init(&state->render.compute, comp_src, 256);
-  rn_vg_init_atlas(&state->render.vgcacheatlas, 1024, 1024, 1, false);
-  RnVgCachedVectorGraphic item = rn_vg_cache_item(&state->render.vgcacheatlas, maxw, maxh, minx, miny, 40,10.0f);
-  DA_PUSH(&state->render.vgcache, item);
-  rn_vg_path_build_tiles(
-    &state->render.vec, 0, 16, &state->render.compute.path_tile_metas,
-    &state->render.compute.path_tile_ranges, &state->render.compute.path_tile_seg_indicies);
-
+  float t0 = glfwGetTime();
+rn_vg_path_build_tiles(
+    &state->render.vec, 0, 16, 
+    &state->render.compute.path_tile_metas,
+    &state->render.compute.path_tile_ranges, 
+    &state->render.compute.path_tile_seg_indicies);
+  float t1 = glfwGetTime();
+  printf("Time for path build tiles: %f\n", t1 - t0);
 }
 
 /* This function renders every vertex in the current batch */
@@ -1799,6 +1798,7 @@ void rn_begin(RnState* state) {
 
   RnVgTileJobList jobs = DA_INIT;
   rn_vg_collect_dirty_tile_jobs(
+    state,
     &state->render.vgcacheatlas,
     &state->render.vgcache,
     &state->render.compute.path_tile_metas,
@@ -2896,20 +2896,30 @@ void
 rn_vg_compute_update(RnVgState_Compute* state, const RnVgCachingAtlas* atlas, const RnVgTileJobList* jobs) {
   if (jobs->len == 0) return;
 
-  glBindImageTexture(0, atlas->texid, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+  GLuint query;
+glGenQueries(1, &query);
 
-  ensure_gpu_ssbo(state->job_ssbo, &state->job_cap, jobs->len * sizeof(RnVgTileJob));
+glBindImageTexture(0, atlas->texid, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+ensure_gpu_ssbo(state->job_ssbo, &state->job_cap, jobs->len * sizeof(RnVgTileJob));
+glNamedBufferSubData(state->job_ssbo, 0, jobs->len*sizeof(RnVgTileJob), jobs->data);
 
-  glNamedBufferSubData(state->job_ssbo, 0, jobs->len*sizeof(RnVgTileJob), jobs->data);
+glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, state->meta_ssbo);
+glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, state->range_ssbo);
+glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, state->index_ssbo);
+glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, state->job_ssbo);
 
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, state->meta_ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, state->range_ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, state->index_ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, state->job_ssbo);
+glUseProgram(state->compute_program);
 
-  glUseProgram(state->compute_program);
-  glDispatchCompute(jobs->len, 1, 1); 
-  glMemoryBarrier(GL_ALL_BARRIER_BITS);
+glBeginQuery(GL_TIME_ELAPSED, query);
+glDispatchCompute(jobs->len, 1, 1);
+glEndQuery(GL_TIME_ELAPSED);
+
+// Wait for results (blocking, but accurate)
+GLuint64 timeElapsed = 0;
+glGetQueryObjectui64v(query, GL_QUERY_RESULT, &timeElapsed);
+printf("Compute shader time: %f s\n", timeElapsed / 1000000000.0);
+glDeleteQueries(1, &query);
+
 }
 
 RnAABB 
@@ -2928,76 +2938,10 @@ rn_vg_segment_get_aabb(RnSegment segment, float pad) {
 }
 
 
-RnTileStatus get_tile_status(
-  const RnPathHeader* path,
-  float tile_x, float tile_y,
-  float tile_size,
-  const RnVgSegmentList* segments, const RnUintList* indices,
-  uint32_t start, uint32_t end
-) {
-  vec2s corners[4] = {
-    { tile_x,             tile_y },
-    { tile_x+tile_size,   tile_y },
-    { tile_x,             tile_y+tile_size },
-    { tile_x+tile_size,   tile_y+tile_size }
-  };
-  int winding_state[4];
-  const float eps = 1e-6f;
-
-  float tminx = tile_x, tminy = tile_y;
-  float tmaxx = tile_x + tile_size, tmaxy = tile_y + tile_size;
-  float stroke = path->stroke_width; 
-  bool stroke_hits = false;
-
-  // first checking if stroke hits tile, because then, this tile is NOT empty 
-  for (uint32_t i = start; i < end; ++i) {
-    const RnSegment* s = &segments->data[indices->data[i]];
-    if (s->type != 0) continue;
-    float minx = fminf(s->x0, s->x1) - stroke;
-    float miny = fminf(s->y0, s->y1) - stroke;
-    float maxx = fmaxf(s->x0, s->x1) + stroke;
-    float maxy = fmaxf(s->y0, s->y1) + stroke;
-    if (!(maxx < tminx || minx > tmaxx || maxy < tminy || miny > tmaxy)) {
-      stroke_hits = true; 
-    }
-  }
-
-  // for every corner of the tile, we cast a horizontal ray to every segments that is given.
-  // using this ray approach, we do the winding calculation like in the compute shader. 
-  // when all corners of the tile resulted in the same winding state, this means the 
-  // tile is either fully empty or fully filled.
-  // if the winding states do not agree, it means the tile is partially filled.
-  for (int c = 0; c < 4; ++c) {
-    vec2s p = corners[c];
-    int winding = 0, eo = 0;
-
-    for (uint32_t i = start; i < end; ++i) {
-      const RnSegment* s = &segments->data[indices->data[i]];
-      if (s->type != 0) continue;
-      float dy = s->y1 - s->y0;
-      if (fabsf(dy) < eps) continue;
-      bool up   = (s->y0 <= p.y + eps && s->y1 > p.y + eps);
-      bool down = (s->y1 <= p.y + eps && s->y0 > p.y + eps);
-
-      if (up || down) {
-        float t = (p.y - s->y0) / dy;
-        float x = s->x0 + t * (s->x1 - s->x0);
-        if (x > p.x) {
-          winding += (up ? 1 : -1);
-          eo = (eo == 0) ? 1 : 0;
-        }
-      }
-    }
-    winding_state[c] = (path->fill_rule == 0) ? (eo == 1) : (winding != 0);
-    if (c > 0 && winding_state[c] != winding_state[0]) {
-      return RN_TILE_MIXED; 
-    }
-  }
-
-  if (stroke_hits) {
-    return RN_TILE_MIXED;
-  }
-  return (winding_state[0] == 1) ? RN_TILE_FULL : RN_TILE_EMPTY;
+static inline uint32_t clampu32_int(int v, uint32_t lo, uint32_t hi) {
+    if (v < (int)lo) return lo;
+    if (v > (int)hi) return hi;
+    return (uint32_t)v;
 }
 
 void rn_vg_path_accumulate_rows_csr(
@@ -3011,128 +2955,276 @@ void rn_vg_path_accumulate_rows_csr(
   RnVgTilePathRangeList* ranges,
   RnUintList* indices)
 {
-  RnPathHeader path = state->paths.data[path_id];
-
-  uint32_t row_start[n_tiles_y]; 
-  uint32_t row_count[n_tiles_y]; 
-
-  for (uint32_t row_y = 0; row_y < n_tiles_y; row_y++) {
-    row_start[row_y] = indices->len;
-    for (uint32_t i = 0; i < path.count; ++i) {
-      RnSegment seg = state->segments.data[path.start + i];
-      RnAABB aabb = rn_vg_segment_get_aabb(seg, path.stroke_width / 2.0f);
-
-      // needs to happen (idy why)
-      aabb.miny -= path.stroke_width / 2.0f;
-
-      int seg_top = (int)floorf((aabb.miny - path_y) / (float)tilesize);
-      int seg_bot = (int)floorf((aabb.maxy - path_y) / (float)tilesize);
-
-      DA_PUSH(indices, path.start + i);
+  const RnPathHeader path = state->paths.data[path_id];
+  const uint32_t seg_count = path.count;
+  if (seg_count == 0) {
+    const uint32_t total_tiles = n_tiles_x * n_tiles_y;
+    for (uint32_t t = 0; t < total_tiles; ++t) {
+      RnVgCSRTileRange r = { .start = indices->len, .count = 0u, .flags = RN_TILE_MIXED };
+      DA_PUSH(ranges, r);
     }
+    return;
+  }
 
-    row_count[row_y] = indices->len - row_start[row_y];
+  const float half_stroke = path.stroke_width * 0.5f;
+  const float ts = (float)tilesize;
+  const float inv_ts = 1.0f / ts;
+  const float eps = 1e-6f * ts;
+
+  const uint32_t total_tiles = n_tiles_x * n_tiles_y;
+
+  float *minx = (float*)malloc(sizeof(float) * seg_count);
+  float *maxx = (float*)malloc(sizeof(float) * seg_count);
+  float *miny = (float*)malloc(sizeof(float) * seg_count);
+  float *maxy = (float*)malloc(sizeof(float) * seg_count);
+
+  for (uint32_t i = 0; i < seg_count; ++i) {
+    const RnSegment seg = state->segments.data[path.start + i];
+    RnAABB aabb = rn_vg_segment_get_aabb(seg, half_stroke);
+    aabb.miny -= half_stroke;
+    minx[i] = aabb.minx;
+    maxx[i] = aabb.maxx;
+    miny[i] = aabb.miny;
+    maxy[i] = aabb.maxy;
+  }
+
+  int  *min_tx_raw = (int*)malloc(sizeof(int) * seg_count);
+  int  *max_tx_raw = (int*)malloc(sizeof(int) * seg_count);
+  int  *min_ty_raw = (int*)malloc(sizeof(int) * seg_count);
+  int  *max_ty_raw = (int*)malloc(sizeof(int) * seg_count);
+  uint8_t *valid = (uint8_t*)malloc(seg_count); 
+
+  #pragma omp parallel for schedule(static)
+  for (int i = 0; i < (int)seg_count; i += 8) {
+    const int remaining = (int)seg_count - i;
+    const int width = remaining >= 8 ? 8 : remaining;
+    __m256 v_minx = _mm256_maskload_ps(minx + i, _mm256_set_epi32(
+      width>7?-1:0, width>6?-1:0, width>5?-1:0, width>4?-1:0,
+      width>3?-1:0, width>2?-1:0, width>1?-1:0, width>0?-1:0));
+    __m256 v_maxx = _mm256_maskload_ps(maxx + i, _mm256_set_epi32(
+      width>7?-1:0, width>6?-1:0, width>5?-1:0, width>4?-1:0,
+      width>3?-1:0, width>2?-1:0, width>1?-1:0, width>0?-1:0));
+    __m256 v_miny = _mm256_maskload_ps(miny + i, _mm256_set_epi32(
+      width>7?-1:0, width>6?-1:0, width>5?-1:0, width>4?-1:0,
+      width>3?-1:0, width>2?-1:0, width>1?-1:0, width>0?-1:0));
+    __m256 v_maxy = _mm256_maskload_ps(maxy + i, _mm256_set_epi32(
+      width>7?-1:0, width>6?-1:0, width>5?-1:0, width>4?-1:0,
+      width>3?-1:0, width>2?-1:0, width>1?-1:0, width>0?-1:0));
+
+    const __m256 v_path_x  = _mm256_set1_ps(path_x);
+    const __m256 v_path_y  = _mm256_set1_ps(path_y);
+    const __m256 v_inv_ts  = _mm256_set1_ps(inv_ts);
+    const __m256 v_eps     = _mm256_set1_ps(eps);
+
+    __m256 v_minx_adj = _mm256_sub_ps(v_minx, v_eps);
+    __m256 v_maxx_adj = _mm256_add_ps(v_maxx, v_eps);
+    __m256 v_miny_adj = _mm256_sub_ps(v_miny, v_eps);
+    __m256 v_maxy_adj = _mm256_add_ps(v_maxy, v_eps);
+
+    __m256 v_tx_min_f = _mm256_mul_ps(_mm256_sub_ps(v_minx_adj, v_path_x), v_inv_ts);
+    __m256 v_tx_max_f = _mm256_mul_ps(_mm256_sub_ps(v_maxx_adj, v_path_x), v_inv_ts);
+    __m256 v_ty_min_f = _mm256_mul_ps(_mm256_sub_ps(v_miny_adj, v_path_y), v_inv_ts);
+    __m256 v_ty_max_f = _mm256_mul_ps(_mm256_sub_ps(v_maxy_adj, v_path_y), v_inv_ts);
+
+    __m256 v_tx_min_ff = _mm256_floor_ps(v_tx_min_f);
+    __m256 v_tx_max_ff = _mm256_floor_ps(v_tx_max_f);
+    __m256 v_ty_min_ff = _mm256_floor_ps(v_ty_min_f);
+    __m256 v_ty_max_ff = _mm256_floor_ps(v_ty_max_f);
+
+    __m256i v_tx_min_i = _mm256_cvtps_epi32(v_tx_min_ff);
+    __m256i v_tx_max_i = _mm256_cvtps_epi32(v_tx_max_ff);
+    __m256i v_ty_min_i = _mm256_cvtps_epi32(v_ty_min_ff);
+    __m256i v_ty_max_i = _mm256_cvtps_epi32(v_ty_max_ff);
+
+    int txmin[8], txmax[8], tymin[8], tymax[8];
+    _mm256_storeu_si256((__m256i*)txmin, v_tx_min_i);
+    _mm256_storeu_si256((__m256i*)txmax, v_tx_max_i);
+    _mm256_storeu_si256((__m256i*)tymin, v_ty_min_i);
+    _mm256_storeu_si256((__m256i*)tymax, v_ty_max_i);
+
+    for (int k = 0; k < width; ++k) {
+      const int raw_min_tx = txmin[k];
+      const int raw_max_tx = txmax[k];
+      const int raw_min_ty = tymin[k];
+      const int raw_max_ty = tymax[k];
+      const int out_x = (raw_max_tx < 0) || (raw_min_tx > (int)n_tiles_x - 1);
+      const int out_y = (raw_max_ty < 0) || (raw_min_ty > (int)n_tiles_y - 1);
+
+      if (out_x || out_y) {
+        min_tx_raw[i + k] = 1; max_tx_raw[i + k] = 0;
+        min_ty_raw[i + k] = 1; max_ty_raw[i + k] = 0;
+        valid[i + k] = 0;
+      } else {
+        min_tx_raw[i + k] = raw_min_tx;
+        max_tx_raw[i + k] = raw_max_tx;
+        min_ty_raw[i + k] = raw_min_ty;
+        max_ty_raw[i + k] = raw_max_ty;
+        valid[i + k] = 1;
+      }
+    }
+  }
+
+  uint32_t *counts = (uint32_t*)calloc(total_tiles, sizeof(uint32_t));
+
+  // Fixed counting pass
+  #pragma omp parallel for schedule(static)
+  for (int i = 0; i < (int)seg_count; ++i) {
+    if (!valid[i]) continue;
+
+    uint32_t min_tx = clampu32_int(min_tx_raw[i], 0u, n_tiles_x - 1);
+    uint32_t max_tx = clampu32_int(max_tx_raw[i], 0u, n_tiles_x - 1);
+    uint32_t min_ty = clampu32_int(min_ty_raw[i], 0u, n_tiles_y - 1);
+    uint32_t max_ty = clampu32_int(max_ty_raw[i], 0u, n_tiles_y - 1);
+
+    for (uint32_t ty = min_ty; ty <= max_ty; ++ty) {
+      const uint32_t row_base = ty * n_tiles_x;
+      for (uint32_t tx = min_tx; tx <= max_tx; ++tx) {
+        const uint32_t tile_id = row_base + tx;
+        #pragma omp atomic update
+        counts[tile_id] += 1u;
+      }
+    }
+  }
+
+  uint32_t *offsets = (uint32_t*)malloc(sizeof(uint32_t) * (total_tiles + 1));
+  offsets[0] = 0;
+  for (uint32_t t = 0; t < total_tiles; ++t) {
+    offsets[t + 1] = offsets[t] + counts[t];
+  }
+  const uint32_t total_indices = offsets[total_tiles];
+
+  uint32_t *tmp_indices = (uint32_t*) (total_indices ? malloc(sizeof(uint32_t) * total_indices) : NULL);
+  uint32_t *cursors = (uint32_t*)malloc(sizeof(uint32_t) * total_tiles);
+  memcpy(cursors, offsets, sizeof(uint32_t) * total_tiles);
+
+  // Fixed fill pass
+  for (uint32_t i = 0; i < seg_count; ++i) {
+    if (!valid[i]) continue;
+
+    uint32_t min_tx = clampu32_int(min_tx_raw[i], 0u, n_tiles_x - 1);
+    uint32_t max_tx = clampu32_int(max_tx_raw[i], 0u, n_tiles_x - 1);
+    uint32_t min_ty = clampu32_int(min_ty_raw[i], 0u, n_tiles_y - 1);
+    uint32_t max_ty = clampu32_int(max_ty_raw[i], 0u, n_tiles_y - 1);
+
+    const uint32_t seg_index = path.start + i;
+    for (uint32_t ty = min_ty; ty <= max_ty; ++ty) {
+      const uint32_t row_base = ty * n_tiles_x;
+      for (uint32_t tx = min_tx; tx <= max_tx; ++tx) {
+        const uint32_t tile_id = row_base + tx;
+        const uint32_t dst = cursors[tile_id]++;
+        tmp_indices[dst] = seg_index;
+      }
+    }
   }
 
   for (uint32_t ty = 0; ty < n_tiles_y; ++ty) {
     for (uint32_t tx = 0; tx < n_tiles_x; ++tx) {
-      uint32_t start = row_start[ty];
-      uint32_t end   = start + row_count[ty];
+      const uint32_t tile_id = ty * n_tiles_x + tx;
 
-      RnTileStatus status = get_tile_status(
-        &path,
-        path_x + tx * tilesize,
-        path_y + ty * tilesize,
-        (float)tilesize,
-        &state->segments,
-        indices,
-        start,
-        end
-      );
+      const uint32_t start = indices->len;
+      const uint32_t cnt   = counts[tile_id];
+      const uint32_t off   = offsets[tile_id];
+
+      for (uint32_t j = 0; j < cnt; ++j) {
+        DA_PUSH(indices, tmp_indices[off + j]);
+      }
+      const uint32_t end = indices->len;
 
       RnVgCSRTileRange r = {
         .start = start,
-        .count = row_count[ty],
-        .flags = status
+        .count = end - start,
+        .flags = RN_TILE_MIXED
       };
       DA_PUSH(ranges, r);
     }
   }
+
+  free(minx); free(maxx); free(miny); free(maxy);
+  free(min_tx_raw); free(max_tx_raw); free(min_ty_raw); free(max_ty_raw);
+  free(valid);
+  free(counts);
+  free(offsets);
+  free(cursors);
+  if (tmp_indices) free(tmp_indices);
 }
-
-
 
 void rn_vg_path_build_tiles(
-  RnVgState* state, 
-  uint32_t path_id,
-  uint32_t tilesize,
-  RnVgPathTileMetaList* metas, 
-  RnVgTilePathRangeList* ranges,
-  RnUintList* indices)
+    RnVgState* state, 
+    uint32_t path_id,
+    uint32_t tilesize,
+    RnVgPathTileMetaList* metas, 
+    RnVgTilePathRangeList* ranges,
+    RnUintList* indices)
 {
-  RnPathHeader path = state->paths.data[path_id];
-  float pad = ceilf(path.stroke_width / 2.0f + (path.stroke_flags & RN_STROKE_JOIN_MITER) ? path.miter_limit : 0); 
+    RnPathHeader path = state->paths.data[path_id];
 
-  RnAABB path_aabb = { FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX };
-  for (uint32_t i = 0; i < path.count; i++) {
-    RnSegment seg = state->segments.data[path.start + i];
-    RnAABB seg_aabb = rn_vg_segment_get_aabb(seg, pad);
-    path_aabb.minx = MIN(path_aabb.minx, seg_aabb.minx);
-    path_aabb.miny = MIN(path_aabb.miny, seg_aabb.miny);
-    path_aabb.maxx = MAX(path_aabb.maxx, seg_aabb.maxx);
-    path_aabb.maxy = MAX(path_aabb.maxy, seg_aabb.maxy);
-  }
+    // Fix precedence bug: pad now correct
+    float pad = ceilf(path.stroke_width * 0.5f +
+                     ((path.stroke_flags & RN_STROKE_JOIN_MITER) ? path.miter_limit : 0.0f));
 
-  if (path_aabb.minx > path_aabb.maxx || path_aabb.miny > path_aabb.maxy) {
+    // Compute path AABB
+    RnAABB path_aabb = { FLT_MAX, FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (uint32_t i = 0; i < path.count; i++) {
+        RnSegment seg = state->segments.data[path.start + i];
+        RnAABB seg_aabb = rn_vg_segment_get_aabb(seg, pad);
+        path_aabb.minx = MIN(path_aabb.minx, seg_aabb.minx);
+        path_aabb.miny = MIN(path_aabb.miny, seg_aabb.miny);
+        path_aabb.maxx = MAX(path_aabb.maxx, seg_aabb.maxx);
+        path_aabb.maxy = MAX(path_aabb.maxy, seg_aabb.maxy);
+    }
+
+    // Degenerate path
+    if (path_aabb.minx > path_aabb.maxx || path_aabb.miny > path_aabb.maxy) {
+        RnVgPathTileMeta meta = {0};
+        meta.tiles_x = meta.tiles_y = 0;
+        meta.built = true;
+        meta.tile_size = tilesize;
+        DA_INSERT(metas, path_id, meta);
+        return;
+    }
+
+    uint32_t n_tiles_x = (uint32_t)((path_aabb.maxx - path_aabb.minx + tilesize - 1) / tilesize);
+    uint32_t n_tiles_y = (uint32_t)((path_aabb.maxy - path_aabb.miny + tilesize - 1) / tilesize);
+
+    // Reserve CSR space
+    uint32_t total_tiles = n_tiles_x * n_tiles_y;
+    DA_RESERVE(ranges, ranges->len + total_tiles);
+
+    // Fill per-tile CSR
+    size_t base_range = ranges->len;
+    size_t base_index = indices->len;
+
+    rn_vg_path_accumulate_rows_csr(
+        state, path_id, n_tiles_x, n_tiles_y,
+        path_aabb.minx, path_aabb.miny, tilesize,
+        ranges, indices
+    );
+
+    // Meta entry for this path
     RnVgPathTileMeta meta = {0};
-    meta.tiles_x = meta.tiles_y = 0;
-    meta.built = true;
-    meta.tile_size = tilesize;
+    meta.ranges_off   = (uint32_t)base_range;
+    meta.tiles_x      = n_tiles_x;
+    meta.tiles_y      = n_tiles_y;
+    meta.tile_size    = tilesize;
+    meta.total_ranges = total_tiles;
+    meta.built        = true;
+
     DA_INSERT(metas, path_id, meta);
-    return;
-  }
-
-  uint32_t n_tiles_x = (uint32_t)((path_aabb.maxx - path_aabb.minx + tilesize - 1) / tilesize);
-  uint32_t n_tiles_y = (uint32_t)((path_aabb.maxy - path_aabb.miny + tilesize - 1) / tilesize);
-  uint32_t total_tiles = n_tiles_x * n_tiles_y;
-
-  RnUintList segs_per_tile[total_tiles]; 
-  for (uint32_t i = 0; i < total_tiles; i++) segs_per_tile[i] = (RnUintList)DA_INIT;
-
-  DA_RESERVE(ranges, ranges->len + total_tiles);
-  RnVgPathTileMeta meta = {0};
-  meta.ranges_off = ranges->len;
-  meta.tiles_x = n_tiles_x;
-  meta.tiles_y = n_tiles_y;
-  meta.tile_size = tilesize; 
-  meta.total_ranges = total_tiles;
-  meta.built = true;
-
-  size_t base_range  = ranges->len;
-  size_t base_index  = indices->len;
-  rn_vg_path_accumulate_rows_csr(
-    state, path_id, n_tiles_x, n_tiles_y,
-    path_aabb.minx, path_aabb.miny, tilesize, ranges, indices 
-  );
-
-  meta.ranges_off    = (uint32_t)base_range;
-  meta.total_ranges  = n_tiles_x * n_tiles_y;
-  meta.built = true;
-
-  for (uint32_t i = 0; i < total_tiles; i++) DA_FREE(&segs_per_tile[i]);
-
-  DA_INSERT(metas, path_id, meta);
 }
 
+
+
+
 void rn_vg_collect_dirty_tile_jobs(
+  RnState* state,
   const RnVgCachingAtlas* atlas, 
-  const RnVgCachedVectorGraphicList* items,
+  RnVgCachedVectorGraphicList* items,
   const RnVgPathTileMetaList* metas, 
   RnVgTileJobList* o_jobs) {
   if(!o_jobs) return;
   DA_CLEAR(o_jobs);
   for(uint32_t i = 0; i < items->len; i++) {
-    const RnVgCachedVectorGraphic* item = &items->data[i];
+    RnVgCachedVectorGraphic* item = &items->data[i];
     if(!item->in_atlas || !item->dirty) continue;
     const RnVgPathTileMeta meta = metas->data[item->path_id];
     if(!meta.built || meta.tiles_x == 0 || meta.tiles_y == 0) continue;
@@ -3143,6 +3235,8 @@ void rn_vg_collect_dirty_tile_jobs(
     int ih = (int)meta.tiles_y * (int)meta.tile_size;
     for (uint32_t y = 0; y < meta.tiles_y; y++) {
       for (uint32_t x = 0; x < meta.tiles_x; x++) {
+        const RnVgCSRTileRange r = state->render.compute.path_tile_ranges.data[meta.ranges_off + y*meta.tiles_x + x];
+        if (r.flags == RN_TILE_EMPTY) continue; 
         RnVgTileJob job = { 
           .base_x = ix, .base_y = iy, 
           .rect_w = iw, .rect_h = ih, 
@@ -3153,6 +3247,7 @@ void rn_vg_collect_dirty_tile_jobs(
         DA_PUSH(o_jobs, job);
       }
     }
+    item->dirty = false;
   }
 }
 
