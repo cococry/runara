@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+#include <string.h>
 #include <float.h>
 #include <fontconfig/fontconfig.h>
 #include <cglm/mat4.h>
@@ -6,10 +8,9 @@
 #include "include/runara/runara.h"
 
 #include <glad/glad.h>
-#include <GLFW/glfw3.h>
 #include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include "vendor/stb_image/stb_image.h"
 
 #define LINESKY_IMPLEMENTATION 
 #define LINESKY_STRIP_STRUCTURES
@@ -20,7 +21,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 
@@ -67,7 +67,7 @@ static void sync_gpu_ssbo(uint32_t id, const void* data, GLsizeiptr len, uint32_
   if (bytes > 0) {
     GLint64 gpu_size = 0;
     glGetNamedBufferParameteri64v(id, GL_BUFFER_SIZE, &gpu_size);
-    if (gpu_size < bytes) {
+    if (gpu_size < (GLint64)bytes) {
       glNamedBufferData(id, bytes, NULL, GL_DYNAMIC_DRAW);
     }
     glNamedBufferSubData(id, 0, bytes, data);
@@ -786,82 +786,8 @@ renderer_init(RnState* state) {
   glUseProgram(state->render.shader.id);
   set_projection_matrix(state);
   glUniform1iv(glGetUniformLocation(state->render.shader.id, "u_textures"), RN_MAX_TEX_COUNT_BATCH, tex_slots);
-  // === 1. Create paints (red fill, yellow stroke) ===
-uint32_t paintId = state->render.vec.paints.len;
-DA_RESERVE(&state->render.vec.paints, 1);
-RnPaint* p = &state->render.vec.paints.data[state->render.vec.paints.len++];
-memset(p, 0, sizeof(*p));
-p->type = 0;
-p->color[0] = 1.0f; p->color[1] = 0.0f; p->color[2] = 0.0f; p->color[3] = 1.0f; // red fill
 
-uint32_t paintId2 = state->render.vec.paints.len;
-DA_RESERVE(&state->render.vec.paints, 1);
-RnPaint* p2 = &state->render.vec.paints.data[state->render.vec.paints.len++];
-memset(p2, 0, sizeof(*p2));
-p2->type = 0;
-p2->color[0] = 1.0f; p2->color[1] = 1.0f; p2->color[2] = 0.0f; p2->color[3] = 1.0f; // yellow stroke
-
-// === 2. Zigzag points ===
-float minx = 0.0f;
-float miny = 0.0f;
-float maxw = 1000.0f;
-float maxh = 1000.0f;
-
-int numSegments = 2500; // total zigzag segments
-DA_RESERVE(&state->render.vec.segments, numSegments);
-
-float dx = maxw / (numSegments / 2);  // horizontal step for each zigzag
-float x = minx;
-float yTop = miny;
-float yBottom = miny + maxh;
-
-uint32_t segStart = state->render.vec.segments.len;
-for (int i = 0; i < numSegments; i++) {
-    float x0 = x;
-    float y0 = (i % 2 == 0) ? yTop : yBottom;
-    x += dx;
-    float x1 = x;
-    float y1 = (i % 2 == 0) ? yBottom : yTop;
-
-    RnSegment seg = {
-        .x0 = x0,
-        .y0 = y0,
-        .x1 = x1,
-        .y1 = y1
-    };
-    DA_PUSH(&state->render.vec.segments, seg);
-}
-
-// === 3. Path header ===
-uint32_t pathId = state->render.vec.paths.len;
-DA_RESERVE(&state->render.vec.paths, 1);
-RnPathHeader* ph = &state->render.vec.paths.data[state->render.vec.paths.len++];
-*ph = (RnPathHeader){
-    .start        = segStart,
-    .count        = (uint32_t)numSegments,  // *** Updated for zigzag ***
-    .paint_fill   = paintId,
-    .paint_stroke = UINT32_MAX,
-    .stroke_width = 0.0f,
-    .miter_limit  = 10.0f,
-    .fill_rule    = 0,
-    .stroke_flags = 0
-};
-
-// === 4. Build tiles ===
-state->render.vgcache = (RnVgCachedVectorGraphicList)DA_INIT;
-rn_vg_compute_init(&state->render.compute, comp_src, 256);
-rn_vg_init_atlas(&state->render.vgcacheatlas, 1024, 1024, 1, false);
-RnVgCachedVectorGraphic item = rn_vg_cache_item(&state->render.vgcacheatlas, maxw, maxh, minx, miny, 40, 10.0f);
-DA_PUSH(&state->render.vgcache, item);
-
-  float t0 = glfwGetTime();
-rn_vg_path_build_tiles(
-    &state->render.vec, 0, 16, 
-    &state->render.compute.path_tile_metas,
-    &state->render.compute.path_tile_ranges, 
-    &state->render.compute.path_tile_seg_indicies);
-  float t1 = glfwGetTime();
-  printf("Time for path build tiles: %f\n", t1 - t0);
+  printf("AWIUDAWIUD.\n");
 }
 
 /* This function renders every vertex in the current batch */
@@ -1051,8 +977,8 @@ RnGlyph load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
         layer_color = palette[layer_color_index];
       }
 
-      for (int y = 0; y < slot->bitmap.rows; y++) {
-        for (int x = 0; x < slot->bitmap.width; x++) {
+      for (uint32_t y = 0; y < slot->bitmap.rows; y++) {
+        for (uint32_t x = 0; x < slot->bitmap.width; x++) {
           unsigned char coverage = slot->bitmap.buffer[y * slot->bitmap.pitch + x];
           if (coverage == 0)
             continue;
@@ -1130,7 +1056,7 @@ RnGlyph load_colr_glyph_from_codepoint(RnFont* font, uint64_t codepoint) {
   glyph.codepoint = codepoint;
 
   font->atlas_x += glyph_width + 1;
-  font->atlas_row_h = (font->atlas_row_h > glyph_height) ? font->atlas_row_h : glyph_height;
+  font->atlas_row_h = (font->atlas_row_h > (uint32_t)glyph_height) ? font->atlas_row_h : (uint32_t)glyph_height;
 
   // Cleanup
   free(rgba_data);
@@ -1420,7 +1346,7 @@ rn_init(uint32_t render_w, uint32_t render_h, RnGLLoader loader) {
   setlocale(LC_ALL, "");
 
   // Load OpenGL functions with glad
-  if(!gladLoadGLLoader((GLADloadproc)loader)) {
+  if(loader && !gladLoadGLLoader((GLADloadproc)loader)) {
     RN_ERROR("Failed to initialize Glad.");
     return state;
   }
@@ -1529,6 +1455,7 @@ rn_load_texture_ex(const char* filepath, bool flip, RnTextureFiltering filter) {
   RnTexture tex;
   int width, height, channels;
 
+  stbi_set_flip_vertically_on_load(flip);
   // Load image data with stb_image
   unsigned char* image = stbi_load(filepath, &width, &height, &channels, STBI_rgb_alpha);
   if (!image) {
@@ -1742,6 +1669,7 @@ rn_free_texture(RnTexture* tex) {
 
 void
 rn_free_font(RnState* state, RnFont* font) {
+  (void)state;
   // Cleanup the freetype font handle
   FT_Done_Face(font->face);
   // Destroy the harfbuzz font handle
@@ -2005,8 +1933,10 @@ rn_reload_font_harfbuzz_cache(RnState* state, RnFont font) {
     RnHarfbuzzText* text = state->hb_cache.data[i];
     if(text->font_id == font.id) {
       hb_buffer_destroy(text->buf);
+      char* tmp_str = strdup(text->str);
       free(text);
-      text = load_hb_text_from_str(font, text->str);
+      text = load_hb_text_from_str(font, tmp_str); 
+      free(tmp_str);
     }
   }
 }
@@ -2062,7 +1992,7 @@ void rn_rect_render(
   vec2s pos, 
   vec2s size, 
   RnColor color) {
-  return rn_rect_render_ex(state, pos, size, 0.0f, color, 
+  rn_rect_render_ex(state, pos, size, 0.0f, color, 
                            RN_NO_COLOR, 0.0f, 0.0f);
 }
 
@@ -2077,7 +2007,7 @@ void rn_rect_render_base_types(
   unsigned char color_g,
   unsigned char color_b,
   unsigned char color_a) {
-  return rn_rect_render_ex(state, (vec2s){posx, posy}, 
+  rn_rect_render_ex(state, (vec2s){posx, posy}, 
                            (vec2s){width, height}, rotation_angle, 
                            (RnColor){color_r, color_g, color_b, color_a}, 
                            RN_NO_COLOR, 0.0f, 0.0f);
@@ -2994,7 +2924,6 @@ void rn_vg_path_accumulate_rows_csr(
   int  *max_ty_raw = (int*)malloc(sizeof(int) * seg_count);
   uint8_t *valid = (uint8_t*)malloc(seg_count); 
 
-  #pragma omp parallel for schedule(static)
   for (int i = 0; i < (int)seg_count; i += 8) {
     const int remaining = (int)seg_count - i;
     const int width = remaining >= 8 ? 8 : remaining;
@@ -3067,7 +2996,6 @@ void rn_vg_path_accumulate_rows_csr(
   uint32_t *counts = (uint32_t*)calloc(total_tiles, sizeof(uint32_t));
 
   // Fixed counting pass
-  #pragma omp parallel for schedule(static)
   for (int i = 0; i < (int)seg_count; ++i) {
     if (!valid[i]) continue;
 
@@ -3080,7 +3008,6 @@ void rn_vg_path_accumulate_rows_csr(
       const uint32_t row_base = ty * n_tiles_x;
       for (uint32_t tx = min_tx; tx <= max_tx; ++tx) {
         const uint32_t tile_id = row_base + tx;
-        #pragma omp atomic update
         counts[tile_id] += 1u;
       }
     }
@@ -3273,7 +3200,8 @@ void rn_vg_sync_csr(RnVgState_Compute* state,
       metas_gpu[i] = (RnVgPathTileMeta_GPU){
         m.tiles_x, m.tiles_y, m.tile_size,
         m.ranges_off, 
-        m.total_ranges, 
+        m.total_ranges,
+        index_count,
         m.built ? 1u : 0u
       };
     }
@@ -3289,3 +3217,4 @@ void rn_vg_sync_csr(RnVgState_Compute* state,
   free(metas_gpu);
   state->need_shader_upload = false;
 }
+
