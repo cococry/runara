@@ -13,7 +13,6 @@ project(
 
 cc = meson.get_compiler('c')
 
-# --- Dependencies ---
 dep_glfw3      = dependency('glfw3', required: true)
 dep_cglm       = dependency('cglm', required: true)
 dep_freetype   = dependency('freetype2', required: true)
@@ -21,20 +20,16 @@ dep_harfbuzz   = dependency('harfbuzz', required: true)
 dep_m          = cc.find_library('m', required: true)
 dep_gl         = cc.find_library('GL', required: true)
 
-# Include vendor subdirectories
 subdir('vendor/glad')
 subdir('vendor/stb_image')
 subdir('vendor/linesky')
 
 runara_inc = include_directories('include')
-
-# --- Sources ---
 runara_sources = [
   'runara.c',
-  glad_c,        # from vendor/glad/meson.build
+  glad_c, 
 ]
 
-# --- Compiler flags ---
 runara_cflags = [
   '-march=native',
   '-ffast-math',
@@ -45,7 +40,6 @@ runara_cflags = [
   '-Wno-unused-but-set-variable',
 ]
 
-# --- Static library build ---
 runara_lib = static_library(
   'runara',
   sources: runara_sources,
@@ -66,10 +60,8 @@ runara_lib = static_library(
   install: true
 )
 
-# --- Install headers ---
 install_subdir('include/runara', install_dir: get_option('includedir') / 'runara')
 
-# --- pkg-config file ---
 runara_pc = import('pkgconfig')
 runara_pc.generate(
   name: 'runara',
@@ -81,8 +73,23 @@ runara_pc.generate(
   requires: ['glfw3', 'cglm', 'freetype2', 'harfbuzz'],
 )
 
-# --- Optional run target ---
 run_target('build-runara',
   command: ['meson', 'compile', '-C', meson.current_build_dir()]
 )
 
+runara_dep = declare_dependency(
+  link_with: runara_lib,
+  include_directories: [
+    runara_inc,
+    glad_inc,
+    stb_inc,
+  ],
+  dependencies: [
+    dep_glfw3,
+    dep_cglm,
+    dep_freetype,
+    dep_harfbuzz,
+    dep_gl,
+    dep_m,
+  ]
+)
