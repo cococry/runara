@@ -404,42 +404,22 @@ typedef struct {
  * This structure is used to store information about a 
  * rendered vertex and communicate it to the GPU.
  */
-typedef struct {
-  // The position of the vertex in pixel space 
-  vec2 pos;             // 8 Bytes
-  // The border color of the vertex (ZTO)
-  vec4 border_color;    // 16 Byes
-  // The border width of the vertex (px)
-  float border_width;   // 4 Bytes
-  // The color of the vertex (ZTO)
-  vec4 color;           // 16 Bytes
-  // The texture coordinates of the 
-  // vertex (NDC)
-  vec2 texcoord;        // 8 Bytes
-  // The index of the vertex's texture
-  // within the current batch. This is 
-  // set to -1.0 when no texture is rendered 
-  // with the vertex.
-  float tex_index;      // 4 Bytes
-  // The size of the rectangle that this 
-  // vertex is associated to (pixel space)
-  vec2 size_px;         // 8 Bytes
-  // The positon of the rectangle that this 
-  // vertex is associated to (pixel space)
-  vec2 pos_px;          // 8 Bytes
-  // The corner radius of the vertex (px)
-  float corner_radius;  // 4 Bytes
-  // Specifies if the vertex is rendering a text (
-  // 1.0 if text, 0.0 if not)
-  float is_text;
 
-  // Specifies the starting position from where to cull the 
-  // shape that contains the vertex 
-  vec2 min_coord;
-  // Specifies the ending position from where to cull the 
-  // shape that contains the vertex 
-  vec2 max_coord;
-} RnVertex; // 92 Bytes per vertex
+#pragma pack(push, 1)
+typedef struct {
+  float pos[2];
+  float texcoord[2];
+} RnVertex;
+#pragma pack(pop)
+
+typedef struct {
+    float pos[2];       // x, y position in pixels
+    float size[2];      // width, height in pixels
+    float rotation;     // radians
+    uint8_t color[4];   // RGBA (normalized)
+    uint8_t tex_index;  // texture slot 0–31
+    uint8_t _pad[3];    // align to 4 bytes
+} RnInstance;
 
 typedef DA_TYPE(RnSegment) RnVgSegmentList;
 typedef DA_TYPE(RnPathHeader) RnVgPathHeaderList;
@@ -602,14 +582,13 @@ typedef struct {
   // The OpenGL object ID of the vertex buffer 
   // that is used to communicate vertices 
   // to the GPU.
-  uint32_t vbo;
+  uint32_t vbo_static, vbo_instances;
   // The OpenGL object ID of the index buffer 
   // that is used to index vertices.
   uint32_t ibo;
-  // The number of vertices in the current batch
-  uint32_t vert_count;
   // The vertex data in the current batch
-  RnVertex* verts;
+  RnInstance* instances;
+  uint32_t n_instances;
   // The vertex positions that make up a quad (NDC)
   vec4s vert_pos[4];
   // The textures that are rendered within the 
@@ -620,9 +599,6 @@ typedef struct {
   uint32_t tex_index;
   // The number of textures in the current batch
   uint32_t tex_count;
-  // The number of indices within the 
-  // current batch
-  uint32_t index_count;
 
   RnVgState vec;
   RnVgState_Compute compute;
@@ -633,6 +609,8 @@ typedef struct {
   uint32_t render_w;
   // The height of the rendered area
   uint32_t render_h;
+
+  void* vbo_ptr;  
 } RnRenderState;
 
 /**
@@ -1072,85 +1050,9 @@ void rn_begin(RnState* state);
  * */
 void rn_next_batch(RnState* state);
 
-/*
- * @brief Adds a vertex with specified attributes
- * to the current batch within the renderer.
- *
- * @param[in] state The state of the library
- * @param[in] vert_pos The position of the vertex in NDC
- * Use state->render.vert_pos for preset vertex positions.
- * @param[in] transform The transform matrix of the vertex
- * @param[in] pos The pixel space position associated with 
- * the vertex
- * @param[in] size The pixel space size of the rectangle 
- * associated with the vertex
- * @param[in] color The color of the vertex
- * @param[in] border_color The border color of the vertex
- * @param[in] border_width The border width of the vertex  
- * @param[in] corner_radius The corner radius of the vertex
- * @param[in] texcoord The texture coordinates of the vertex
- * @param[in] The index of the vertex's texture within the 
- * current batch. (See rn_tex_index_from_tex())
- *
- * @return The created vertex
- * */
-RnVertex* rn_add_vertex_ex(
-    RnState* state, 
-    vec4s vert_pos,
-    mat4 transform,
-    vec2s pos, 
-    vec2s size, 
-    RnColor color,
-    RnColor border_color,
-    float border_width,
-    float corner_radius,
-    vec2s texcoord, 
-    float tex_index,
-    bool is_text);
-
-/*
- * @brief Uses 'rn_add_vertex_ex()' with texcoords 
- * zero'd out and tex_index set to -1.
- *
- * @param[in] state The state of the library
- * @param[in] vert_pos The position of the vertex in NDC
- * Use state->render.vert_pos for preset vertex positions.
- * @param[in] transform The transform matrix of the vertex
- * @param[in] pos The pixel space position associated with 
- * the vertex
- * @param[in] size The pixel space size of the rectangle 
- * associated with the vertex
- * @param[in] color The color of the vertex
- * @param[in] border_color The border color of the vertex
- * @param[in] border_width The border width of the vertex  
- * @param[in] corner_radius The corner radius of the vertex
- *
- * @return The created vertex
- * *
- * */
-RnVertex* rn_add_vertex(
-    RnState* state, 
-    vec4s vert_pos,
-    mat4 transform,
-    vec2s pos, 
-    vec2s size, 
-    RnColor color,
-    RnColor border_color,
-    float border_width,
-    float corner_radius);
-
-/*
- * @brief Creates a transform 
- * matrix from a scale and translate 
- * matrix created with the given position and 
- * size.
- *
- * @param[in] pos The position of the shape 
- * @param[in] pos The size of the shape 
- * @param[in] rotation_angle The rotation angle (in degrees) of the shape 
- * @param[out] transform The created transform matrix
- * */
-void rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transform);
+RnInstance* rn_add_instance(RnState* state,
+    vec2s pos, vec2s size, float rotation, RnColor color,
+    uint8_t tex_index);
 
 /*
  * @brief Returns the index of 
@@ -1160,10 +1062,10 @@ void rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transf
  * @param[in] state The state of the library 
  * @param[in] tex The texture to get the index from 
  *
- * @return The index (as float) of the texture within
- * the batch. (-1.0 if the texture is not in the batch)
+ * @return The index of the texture within
+ * the batch. (0 if the texture is not in the batch)
  * */
-float rn_tex_index_from_tex(RnState* state, RnTexture tex);
+uint8_t rn_tex_index_from_tex(RnState* state, RnTexture tex);
 
 /*
  * @brief Simple wrapper function 

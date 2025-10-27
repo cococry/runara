@@ -7,7 +7,7 @@
 #include <ctype.h>
 #include "include/runara/runara.h"
 
-#include <glad/glad.h>
+#include "vendor/glad/include/glad/glad.h"
 #include <math.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "vendor/stb_image/stb_image.h"
@@ -248,100 +248,83 @@ renderer_init(RnState* state) {
   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
   // Allocate memory for vertices
-  state->render.vert_count = 0;
-  state->render.verts = (RnVertex*)malloc(sizeof(RnVertex) * RN_MAX_RENDER_BATCH * 4);
+  state->render.n_instances = 0;
+  state->render.instances = (RnInstance*)calloc(RN_MAX_RENDER_BATCH, sizeof(RnInstance) );
 
-  /* Creating vertex array & vertex buffer for the batch renderer */
-  glCreateVertexArrays(1, &state->render.vao);
+  glGenVertexArrays(1, &state->render.vao);
   glBindVertexArray(state->render.vao);
 
-  // Creating a OpenGL vertex buffer to communicate the 
-  // vertices from CPU to GPU
-  glCreateBuffers(1, &state->render.vbo);
-  glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(RnVertex) * RN_MAX_RENDER_BATCH * 4, NULL, 
-               GL_DYNAMIC_DRAW);
+  RnVertex quad_vertices[4] = {
+    {{0.0f, 0.0f}, {0.0f, 0.0f}},
+    {{1.0f, 0.0f}, {1.0f, 0.0f}},
+    {{1.0f, 1.0f}, {1.0f, 1.0f}},
+    {{0.0f, 1.0f}, {0.0f, 1.0f}},
+  };
+  uint32_t quad_indices[6] = {0, 1, 2, 2, 3, 0};
 
-  // Generate indices to index the vertices
-  uint32_t* indices = (uint32_t*)malloc(sizeof(uint32_t) * RN_MAX_RENDER_BATCH * 6);
+  glGenBuffers(1, &state->render.vbo_static);
+  glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo_static);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
 
-  uint32_t offset = 0;
-  for (uint32_t i = 0; i < RN_MAX_RENDER_BATCH * 6; i += 6) {
-    indices[i + 0] = offset + 0;
-    indices[i + 1] = offset + 1;
-    indices[i + 2] = offset + 2;
-
-    indices[i + 3] = offset + 2;
-    indices[i + 4] = offset + 3;
-    indices[i + 5] = offset + 0;
-    offset += 4;
-  }
-
-  // Creating the OpenGL buffer to store indices
-  glCreateBuffers(1, &state->render.ibo);
+  glGenBuffers(1, &state->render.ibo);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state->render.ibo);
-  glBufferData(GL_ELEMENT_ARRAY_BUFFER, RN_MAX_RENDER_BATCH * 6 * sizeof(uint32_t), indices, GL_STATIC_DRAW);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quad_indices), quad_indices, GL_STATIC_DRAW);
 
-  // Cleanup the indices CPU side
-  free(indices); 
+  // --- Vertex layout for static quad (binding 0) ---
+  glEnableVertexAttribArray(0); // a_local_pos
+  glVertexAttribPointer(
+    0, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), (void*)offsetof(RnVertex, pos));
 
-  /* Defining the vertex layout */
+  glEnableVertexAttribArray(1); // a_texcoord
+  glVertexAttribPointer(
+    1, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), (void*)offsetof(RnVertex, texcoord));
 
-  // Position 
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), NULL);
-  glEnableVertexAttribArray(0);
+  glGenBuffers(1, &state->render.vbo_instances);
+  glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo_instances);
 
-  // Border color
-  glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t)offsetof(RnVertex, border_color));
-  glEnableVertexAttribArray(1);
+  uint32_t size = sizeof(RnInstance) * RN_MAX_RENDER_BATCH;
+  glBufferStorage(GL_ARRAY_BUFFER, size, NULL,
+                  GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
 
-  // Border width
-  glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t)offsetof(RnVertex, border_width));
+  state->render.vbo_ptr = glMapBufferRange(
+    GL_ARRAY_BUFFER, 0, size,
+    GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+
+  GLsizei stride = sizeof(RnInstance);
+  uintptr_t offset = 0;
+
+  // i_pos : vec2
   glEnableVertexAttribArray(2);
+  glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)offset);
+  glVertexAttribDivisor(2, 1);
+  offset += sizeof(float) * 2;
 
-  // Color
-  glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t)offsetof(RnVertex, color));
+  // i_size : vec2
   glEnableVertexAttribArray(3);
+  glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride, (void*)offset);
+  glVertexAttribDivisor(3, 1);
+  offset += sizeof(float) * 2;
 
-  // Texture coordinates
-  glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, texcoord));
+  // i_rotation : float
   glEnableVertexAttribArray(4);
+  glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, (void*)offset);
+  glVertexAttribDivisor(4, 1);
+  offset += sizeof(float) * 1;
 
-  // Texture index within the batch
-  glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, tex_index));
+  // i_color : vec4 (u8 normalized)
   glEnableVertexAttribArray(5);
+  glVertexAttribPointer(5, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride, (void*)offset);
+  glVertexAttribDivisor(5, 1);
+  offset += sizeof(uint8_t) * 4;
 
-  // Size of the rendered shape
-  glVertexAttribPointer(6, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, size_px));
+  // i_tex_index : uint (integer attribute)
   glEnableVertexAttribArray(6);
+  glVertexAttribIPointer(6, 1, GL_UNSIGNED_BYTE, stride, (void*)offset);
+  glVertexAttribDivisor(6, 1);
 
-  // Position of the rendered shape
-  glVertexAttribPointer(7, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, pos_px));
-  glEnableVertexAttribArray(7);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  glBindVertexArray(0);
 
-  // Corner radius 
-  glVertexAttribPointer(8, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, corner_radius));
-  glEnableVertexAttribArray(8);
-
-  glVertexAttribPointer(9, 1, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, is_text));
-  glEnableVertexAttribArray(9);
-
-  glVertexAttribPointer(10, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, min_coord));
-  glEnableVertexAttribArray(10);
-
-  glVertexAttribPointer(11, 2, GL_FLOAT, GL_FALSE, sizeof(RnVertex), 
-                        (void*)(intptr_t*)offsetof(RnVertex, max_coord));
-  glEnableVertexAttribArray(11);
 
   init_vector_rendering(state);
 
@@ -350,157 +333,58 @@ renderer_init(RnState* state) {
   // Vertex shader
   const char* vert_src =
     "#version 460 core\n"
-    "layout (location = 0) in vec2 a_pos;\n"
-    "layout (location = 1) in vec4 a_border_color;\n"
-    "layout (location = 2) in float a_border_width;\n"
-    "layout (location = 3) in vec4 a_color;\n"
-    "layout (location = 4) in vec2 a_texcoord;\n"
-    "layout (location = 5) in float a_tex_index;\n"
-    "layout (location = 6) in vec2 a_size_px;\n"
-    "layout (location = 7) in vec2 a_pos_px;\n"
-    "layout (location = 8) in float a_corner_radius;\n"
-    "layout (location = 9) in float a_is_text;\n"
-    "layout (location = 10) in vec2 a_min_coord;\n"
-    "layout (location = 11) in vec2 a_max_coord;\n"
-
+    "layout(location = 0) in vec2 a_local_pos;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "\n"
+    "layout(location = 2) in vec2 i_pos;\n"
+    "layout(location = 3) in vec2 i_size;\n"
+    "layout(location = 4) in float i_rotation;\n"
+    "layout(location = 5) in vec4 i_color;\n"
+    "layout(location = 6) in int i_tex_index;\n"
+    "\n"
     "uniform mat4 u_proj;\n"
-    "out vec4 v_border_color;\n"
-    "flat out float v_border_width;\n"
-    "out vec4 v_color;\n"
+    "\n"
     "out vec2 v_texcoord;\n"
-    "flat out float v_tex_index;\n"
-    "flat out vec2 v_size_px;\n"
-    "flat out vec2 v_pos_px;\n"
-    "flat out float v_corner_radius;\n"
-    "flat out float v_is_text;\n"
-    "out vec2 v_min_coord;\n"
-    "out vec2 v_max_coord;\n"
-
-    "void main() {\n"
-    "v_color = a_color;\n"
-    "v_texcoord = a_texcoord;\n"
-    "v_tex_index = a_tex_index;\n"
-    "v_border_color = a_border_color;\n"
-    "v_border_width = a_border_width;\n"
-    "v_size_px = a_size_px;\n"
-    "v_pos_px = a_pos_px;\n"
-    "v_corner_radius = a_corner_radius;\n"
-    "v_is_text = a_is_text;\n"
-    "v_min_coord = a_min_coord;\n"
-    "v_max_coord = a_max_coord;\n"
-    "gl_Position = u_proj * vec4(a_pos.x, a_pos.y, 0.0f, 1.0);\n"
+    "out vec4 v_color;\n"
+    "flat out int v_tex_index;\n"
+    "\n"
+    "void main()\n"
+    "{\n"
+    "    // Rotation 2x2\n"
+    "    float c = cos(i_rotation);\n"
+    "    float s = sin(i_rotation);\n"
+    "    mat2 rot = mat2(c, -s, s, c);\n"
+    "\n"
+    "    // Transform\n"
+    "    vec2 world = i_pos + rot * (a_local_pos * i_size);\n"
+    "\n"
+    "    v_texcoord = a_texcoord;\n"
+    "    v_color = i_color;\n"
+    "    v_tex_index = i_tex_index;\n"
+    "    gl_Position = u_proj * vec4(world, 0.0, 1.0);\n"
     "}\n";
 
 
-
-  const char* frag_src = 
+  const char* frag_src =
     "#version 460 core\n"
     "out vec4 o_color;\n"
     "\n"
     "in vec4 v_color;\n"
-    "flat in float v_tex_index;\n"
-    "in vec4 v_border_color;\n"
-    "flat in float v_border_width;\n"
+    "flat in int v_tex_index;\n"
     "in vec2 v_texcoord;\n"
-    "flat in vec2 v_size_px;\n"
-    "flat in vec2 v_pos_px;\n"
-    "flat in float v_corner_radius;\n"
-    "flat in float v_is_text;\n"
+    "\n"
     "uniform sampler2D u_textures[32];\n"
-    "uniform vec2 u_screen_size;\n"
-    "in vec2 v_min_coord;\n"
-    "in vec2 v_max_coord;\n"
     "\n"
-    "float rounded_box_sdf(vec2 center_pos, vec2 size, vec4 radius) {\n"
-    "  radius.xy = (center_pos.x > 0.0) ? radius.xy : radius.zw;\n"
-    "  radius.x = (center_pos.x > 0.0) ? radius.x : radius.y;\n"
-    "\n"
-    "  vec2 q = abs(center_pos) - size + radius.x;\n"
-    "  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius.x;\n"
-    "}\n"
-    "\n"
-    "void main() {\n"
-    "float bias = 0.5; // Small bias to prevent missing pixels\n"
-    "\n"
-    "if (u_screen_size.y - gl_FragCoord.y < v_min_coord.y - bias && v_min_coord.y != -1) {\n"
-    "    discard;\n"
-    "}\n"
-    "if (u_screen_size.y - gl_FragCoord.y > v_max_coord.y + bias && v_max_coord.y != -1) {\n"
-    "    discard;\n"
-    "}\n"
-    "if ((gl_FragCoord.x < v_min_coord.x - bias && v_min_coord.x != -1) || \n"
-    "    (gl_FragCoord.x > v_max_coord.x + bias && v_max_coord.x != -1)) {\n"
-    "    discard;\n"
-    "}\n"
-    " if(v_is_text == 1.0) {\n"
-    "   vec4 sampled = texture(u_textures[int(v_tex_index)], v_texcoord);\n"
-    "   o_color = sampled * v_color;\n"
-    "} else {\n"
-    "   vec4 display_color;"
-    "   if(v_tex_index == -1) {\n"
-    "     display_color = v_color;\n"
-    "   } else {\n"
-    "     display_color = texture(u_textures[int(v_tex_index)], v_texcoord) * v_color;\n"
-    "   }\n"
-    "   vec2 frag_pos = vec2(gl_FragCoord.x, u_screen_size.y - gl_FragCoord.y);\n"
-    "   if(v_corner_radius != 0.0f && v_is_text != 1.0f) {\n"
-    "   vec2 size_adjusted = v_size_px + v_corner_radius * 2.0f;\n"
-    "   vec2 pos_adjusted = v_pos_px - v_corner_radius;\n"
-    "   vec2 bottom_right = pos_adjusted + size_adjusted;\n"
-    "   if (frag_pos.x < pos_adjusted.x || frag_pos.x > bottom_right.x ||\n"
-    "     frag_pos.y < pos_adjusted.y || frag_pos.y > bottom_right.y) {\n"
-    "       discard;\n"
-    "   }\n"
-    "   }\n"
-    "  const vec2 rect_center = vec2(\n"
-    "    v_pos_px.x + v_size_px.x / 2.0f,\n"
-    "    u_screen_size.y - (v_size_px.y / 2.0f + v_pos_px.y)\n"
-    "  );\n"
-    "  const float edge_softness = 2.0f;\n"
-    "  const float border_softness = 2.0f;\n"
-    "  const vec4 corner_radius = vec4(v_corner_radius);\n"
-    "\n"
-    "  float shadow_softness = 0.0f;\n"
-    "  vec2 shadow_offset = vec2(0.0f);\n"
-    "\n"
-    "  vec2 half_size = vec2(v_size_px / 2.0);\n"
-    "\n"
-    "  float distance = rounded_box_sdf(\n"
-    "    gl_FragCoord.xy - rect_center,\n"
-    "    half_size, corner_radius\n"
-    "  );\n"
-    "\n"
-    "  float smoothed_alpha = 1.0f - smoothstep(0.0f,\n"
-    "    edge_softness, distance);\n"
-    "\n"
-    "float border_alpha = (v_corner_radius == 0.0) ? 1.0 - step(v_border_width, abs(distance)) :\n"
-    "                                               (1.0f - smoothstep(v_border_width - border_softness, v_border_width, abs(distance)));\n"
-
-
-    "  float shadow_distance = rounded_box_sdf(\n"
-    "    gl_FragCoord.xy - rect_center + shadow_offset,\n"
-    "    half_size, corner_radius\n"
-    "  );\n"
-    "  float shadow_alpha = 1.0f - smoothstep(\n"
-    "    -shadow_softness, shadow_softness, shadow_distance);\n"
-    "\n"
-    "  vec4 res_color = mix(\n"
-    "    vec4(0.0f),\n"
-    "    display_color,\n"
-    "    min(display_color.a, smoothed_alpha)\n"
-    "  );\n"
-    "  if(v_border_width != 0.0f) {\n"
-    "  res_color = mix(\n"
-    "    res_color,\n"
-    "    v_border_color,\n"
-    "    min(v_border_color.a, min(border_alpha, smoothed_alpha))\n"
-    "  );\n"
-    "  }"
-    "  o_color = res_color;\n"
-    "}\n"
-    "\n"
-    ""
+    "void main()\n"
+    "{\n"
+    "    vec4 col = v_color;\n"
+    "    if (v_tex_index != 0) {\n"
+    "        int idx = clamp(v_tex_index, 0, 31);\n"
+    "        col *= texture(u_textures[idx - 1], v_texcoord);\n"
+    "    }\n"
+    "    o_color = col;\n"
     "}\n";
+
 
   const char* comp_src =
     "#version 460 core\n"
@@ -784,37 +668,27 @@ renderer_init(RnState* state) {
 
   // Upload the texture array (sampler2D array) to the shader
   glUseProgram(state->render.shader.id);
+  glBindVertexArray(state->render.vao);
   set_projection_matrix(state);
   glUniform1iv(glGetUniformLocation(state->render.shader.id, "u_textures"), RN_MAX_TEX_COUNT_BATCH, tex_slots);
-
-  printf("AWIUDAWIUD.\n");
 }
 
 /* This function renders every vertex in the current batch */
 void 
 renderer_flush(RnState* state) {
-  if(state->render.vert_count <= 0) return;
+  if(state->render.n_instances <= 0) return;
 
-  // Set the data to draw (the vertices in the current batch)
-  glUseProgram(state->render.shader.id);
-
-
-  glBindBuffer(GL_ARRAY_BUFFER, state->render.vbo);
-  glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(RnVertex) * state->render.vert_count, 
-                  state->render.verts);
+  memcpy(state->render.vbo_ptr, state->render.instances,
+         sizeof(RnInstance) * state->render.n_instances);
+  glMemoryBarrier(GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT);
 
   // Bind used texture slots
   for(uint32_t i = 0; i < state->render.tex_count; i++) {
     glBindTextureUnit(i, state->render.textures[i].id);
   }
 
-  // Upload the size of the screen to the shader
-  vec2s render_size = (vec2s){(float)state->render.render_w, (float)state->render.render_h};
-  glUniform2fv(glGetUniformLocation(state->render.shader.id, "u_screen_size"), 1, (float*)render_size.raw);
-  glBindVertexArray(state->render.vao);
 
-  // Commit draw call
-  glDrawElements(GL_TRIANGLES, state->render.index_count, GL_UNSIGNED_INT, NULL);
+  glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, state->render.n_instances);
   state->drawcalls++;
 }
 
@@ -823,8 +697,7 @@ renderer_flush(RnState* state) {
  * */
 void renderer_begin(RnState* state) {
   // Resetting all the 
-  state->render.vert_count = 0;
-  state->render.index_count = 0;
+  state->render.n_instances = 0;
   state->render.tex_index = 0;
   state->render.tex_count = 0;
 }
@@ -1718,29 +1591,6 @@ rn_begin_batch(RnState* state) {
 }
 
 void rn_begin(RnState* state) {
-  rn_vg_sync_csr(
-    &state->render.compute, 
-    &state->render.compute.path_tile_metas, 
-    &state->render.compute.path_tile_ranges, 
-    &state->render.compute.path_tile_seg_indicies);
-
-  RnVgTileJobList jobs = DA_INIT;
-  rn_vg_collect_dirty_tile_jobs(
-    state,
-    &state->render.vgcacheatlas,
-    &state->render.vgcache,
-    &state->render.compute.path_tile_metas,
-    &jobs);
-
-  vec_sync_bufs(state);
-
-  rn_vg_compute_update(
-    &state->render.compute,
-    &state->render.vgcacheatlas,
-    &jobs);
-
-  DA_FREE(&jobs);
-
   rn_begin_batch(state); 
 }
 
@@ -1752,107 +1602,38 @@ rn_next_batch(RnState* state) {
   renderer_begin(state);
 }
 
-RnVertex*
-rn_add_vertex_ex(
-  RnState* state, 
-  vec4s vert_pos,
-  mat4 transform,
-  vec2s pos, 
-  vec2s size, 
-  RnColor color,
-  RnColor border_color,
-  float border_width,
-  float corner_radius,
-  vec2s texcoord, 
-  float tex_index,
-  bool is_text) {
-  // If the vetex does not fit into the current batch, 
-  // advance to the next batch
-  if(state->render.vert_count >= RN_MAX_RENDER_BATCH) {
-    rn_next_batch(state);
+RnInstance* rn_add_instance(RnState* state,
+    vec2s pos, vec2s size, float rotation, RnColor color,
+    uint8_t tex_index) {
+  if(state->render.n_instances  + 1 >= RN_MAX_RENDER_BATCH) {
+    renderer_flush(state);
+    state->render.n_instances = 0;
   }
+  RnInstance* inst = &state->render.instances[state->render.n_instances++];
 
-  RnVertex* vertex = &state->render.verts[state->render.vert_count];
+  inst->size[0] = size.x; inst->size[1] = size.y;
+  
+  inst->pos[0] = pos.x; inst->pos[1] = pos.y;
 
-  // Calculating the position of the vertex
-  vec4 result;
-  glm_mat4_mulv(transform, vert_pos.raw, result);
-  state->render.verts[state->render.vert_count].pos[0] = result[0];
-  state->render.verts[state->render.vert_count].pos[1] = result[1];
+  inst->color[0] = color.r;
+  inst->color[1] = color.g;
+  inst->color[2] = color.b;
+  inst->color[3] = color.a;
 
-  vertex->pos_px[0] = pos.x; 
-  vertex->pos_px[1] = pos.y;
+  inst->tex_index = tex_index;
 
-  vertex->size_px[0] = size.x; 
-  vertex->size_px[1] = size.y;
+  inst->rotation = rotation;
 
-  vec4s color_zto = rn_color_to_zto(color); 
+  return inst;
 
-  vertex->color[0] = color_zto.r;
-  vertex->color[1] = color_zto.g;
-  vertex->color[2] = color_zto.b;
-  vertex->color[3] = color_zto.a;
-  vec4s border_color_zto = rn_color_to_zto(border_color); 
-
-  vertex->border_color[0] = border_color_zto.r;
-  vertex->border_color[1] = border_color_zto.g;
-  vertex->border_color[2] = border_color_zto.b;
-  vertex->border_color[3] = border_color_zto.a;
-
-  vertex->border_width = border_width;
-
-  vertex->corner_radius = corner_radius;
-
-  vertex->is_text = is_text ? 1.0 : 0.0;
-
-  vertex->texcoord[0] = texcoord.x;
-  vertex->texcoord[1] = texcoord.y;
-
-  state->render.verts[state->render.vert_count].tex_index = tex_index;
-
-  vertex->min_coord[0] = state->cull_start.x;
-  vertex->min_coord[1] = state->cull_start.y;
-
-  vertex->max_coord[0] = state->cull_end.x;
-  vertex->max_coord[1] = state->cull_end.y;
-
-  state->render.vert_count++;
-
-  return vertex;
-}
-
-void
-rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transform) {
-  mat4 translate; 
-  mat4 scale;
-  mat4 rotation;
-
-  vec3 pos_xyz = {pos.x, pos.y, 0.0f};
-  vec3 size_xyz = {size.x, size.y, 1.0f};  
-  vec3 rotation_axis = {0.0f, 0.0f, 1.0f};
-
-  // Translating (positioning)
-  glm_translate_make(translate, pos_xyz);
-
-  // Scaling
-  glm_scale_make(scale, size_xyz); 
-
-  // Rotation
-  float rad = glm_rad(rotation_angle);
-  glm_rotate_make(rotation, rad, rotation_axis);
-
-  glm_mat4_identity(*transform);
-
-  glm_mat4_mul(translate, rotation, *transform); 
-  glm_mat4_mul(*transform, scale, *transform); 
 }
 
 
-float rn_tex_index_from_tex(RnState* state, RnTexture tex) {
-  float tex_index = -1.0f;
+uint8_t rn_tex_index_from_tex(RnState* state, RnTexture tex) {
+  uint8_t tex_index = 0; 
   for (uint32_t i = 0; i < state->render.tex_count; ++i) {
     if (tex.id == state->render.textures[i].id) {
-      tex_index = i;
+      tex_index = i + 1;
       break;
     }
   }
@@ -1865,23 +1646,6 @@ rn_add_tex_to_batch(RnState* state, RnTexture tex) {
   state->render.tex_index++;
 }
 
-RnVertex*
-rn_add_vertex(
-  RnState* state, 
-  vec4s vert_pos,
-  mat4 transform,
-  vec2s pos, 
-  vec2s size, 
-  RnColor color,
-  RnColor border_color,
-  float border_width,
-  float corner_radius) {
-  return rn_add_vertex_ex(state, vert_pos, transform, 
-                          pos, size, color, border_color, 
-                          border_width, corner_radius, 
-                          (vec2s){0.0f, 0.0f}, -1.0f, false);
-}
-
 void
 rn_end_batch(RnState* state) {
   renderer_flush(state);
@@ -1889,19 +1653,6 @@ rn_end_batch(RnState* state) {
 
 void 
 rn_end(RnState* state) {
-  for(uint32_t i = 0; i < state->render.vgcache.len; i++) {
-    RnVgCachedVectorGraphic item = state->render.vgcache.data[i];
-    vec2s texcoords[4] = { 
-      (vec2s){item.u0, item.v0}, 
-      (vec2s){item.u1, item.v0}, 
-      (vec2s){item.u1, item.v1}, 
-      (vec2s){item.u0, item.v1} 
-    };
-    vec2s draw_pos = { item.posx, item.posy };
-    RnTexture tex = { .id = state->render.vgcacheatlas.texid, .width = state->render.vgcacheatlas.w, .height = state->render.vgcacheatlas.h};
-    rn_image_render(state, draw_pos, RN_WHITE, tex);  
-  }
-
   rn_end_batch(state);
 }
 
@@ -1951,40 +1702,7 @@ rn_rect_render_ex(
   RnColor border_color, 
   float border_width,
   float corner_radius) {
-
-
-  pos.x = floorf(pos.x + 0.5f);
-  pos.y = floorf(pos.y + 0.5f);
-  size.x = floorf(size.x + 0.5f);
-  size.y = floorf(size.y + 0.5f);
-
-  vec2s pos_initial = pos;
-  // Change the position in a way that the given  
-  // position is taken as the top left of the shape
-  pos = (vec2s){pos.x + size.x / 2.0f, pos.y + size.y / 2.0f};
-
-  // Position is 0 if the quad has corners
-  vec2s pos_matrix = {corner_radius != 0.0f ? 
-    (float)state->render.render_w / 2.0f : pos.x, 
-    corner_radius != 0.0f ? (float)state->render.render_h / 2.0f : pos.y};
-
-  // Size is 0 if the quad has corners
-  vec2s size_matrix = {corner_radius != 0.0f ? state->render.render_w : size.x, 
-    corner_radius != 0.0f ? state->render.render_h : size.y};
-
-  // Calculating the transform matrix
-  mat4 transform;
-  rn_transform_make(pos_matrix, size_matrix, rotation_angle, &transform);
-
-  // Adding the vertices to the batch renderer
-  for(uint32_t i = 0; i < 4; i++) {
-    rn_add_vertex_ex(state, state->render.vert_pos[i], transform, pos_initial, size, color,
-                     border_color, border_width, corner_radius,
-                     (vec2s){0.0f, 0.0f}, -1, false);
-  }
-
-  // Adding the indices to the renderer
-  state->render.index_count += 6;
+  rn_add_instance(state, pos, size, rotation_angle, color,0); 
 }
 
 void rn_rect_render(
@@ -2024,39 +1742,15 @@ void rn_image_render_adv(
   RnColor border_color,
   float border_width, 
   float corner_radius) {
-  // Check if we need to flush and start a new batch
-  if (state->render.tex_count >= RN_MAX_TEX_COUNT_BATCH) {
-    renderer_flush(state);
-    renderer_begin(state);
-  }
+  // Find or add texture and get it's index
+  uint8_t tex_index = rn_tex_index_from_tex(state, tex);
 
-  // Adjust position to be the top-left of the rendered object
-  vec2s pos_initial = pos;
-  pos.x += tex.width / 2.0f;
-  pos.y += tex.height / 2.0f;
-
-  // Find or add texture and get its index
-  float tex_index = rn_tex_index_from_tex(state, tex);
-
-  if (tex_index == -1.0f) {
-    tex_index = (float)state->render.tex_index;
+  if (tex_index == 0) {
     rn_add_tex_to_batch(state, tex);
+    tex_index = (float)state->render.tex_count;
   }
 
-  // Create transform matrix
-  mat4 transform;
-  rn_transform_make(pos, (vec2s){tex.width, tex.height}, rotation_angle, &transform);
-
-  // Add vertices
-  for (uint32_t i = 0; i < 4; ++i) {
-    rn_add_vertex_ex(state, state->render.vert_pos[i], transform, pos_initial, 
-                     (vec2s){tex.width, tex.height}, color,
-                     border_color, border_width, corner_radius,
-                     texcoords[i], tex_index, is_text);
-  }
-
-  // Adding the indices to the renderer
-  state->render.index_count += 6;
+  rn_add_instance(state, pos, (vec2s){tex.width, tex.height}, 0.0f, color, tex_index);
 }
 
 void rn_image_render_ex(
@@ -3024,7 +2718,6 @@ void rn_vg_path_accumulate_rows_csr(
   uint32_t *cursors = (uint32_t*)malloc(sizeof(uint32_t) * total_tiles);
   memcpy(cursors, offsets, sizeof(uint32_t) * total_tiles);
 
-  // Fixed fill pass
   for (uint32_t i = 0; i < seg_count; ++i) {
     if (!valid[i]) continue;
 
