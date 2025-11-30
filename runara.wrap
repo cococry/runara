@@ -1,0 +1,8 @@
+[wrap-git]
+directory = runara
+url = https://github.com/cococry/runara.git
+revision = main
+
+[provide]
+runara = runara_dep
+

@@ -13,6 +13,59 @@
 #include <harfbuzz/hb.h>
 #include <harfbuzz/hb-ft.h>
 
+// LINESKY
+typedef struct {
+  uint16_t x, y;
+} ls_vec2d;
+
+typedef struct {
+  ls_vec2d* skyline;
+  ls_vec2d size;
+
+  bool _init;
+  uint16_t _nskyline;
+} ls_atlas2d;
+
+#define DA_TYPE(T) struct { T* data; size_t len; size_t cap; }
+#define DA_INIT { NULL, 0, 0 }
+#define DA_RESERVE(A, CAP) do { \
+    if ((A)->cap < (CAP)) { \
+        size_t _nc = ((CAP) < 8 ? 8 : (CAP)); \
+        (A)->data = realloc((A)->data, _nc * sizeof(*(A)->data)); \
+        (A)->cap = _nc; \
+    } \
+} while(0)
+#define DA_PUSH(A, V) do { \
+    if ((A)->len == (A)->cap) DA_RESERVE(A, (A)->cap * 2 + 1); \
+    (A)->data[(A)->len++] = (V); \
+} while(0)
+#define DA_REMOVE(A, IDX) do { \
+    if ((IDX) < (A)->len) { \
+        memmove(&(A)->data[IDX], &(A)->data[IDX + 1], \
+                ((A)->len - (IDX) - 1) * sizeof(*(A)->data)); \
+        (A)->len--; \
+    } \
+} while(0)
+
+#define DA_CLEAR(A) do { \
+    (A)->len = 0; \
+} while(0)
+#define DA_FREE(A) do { \
+    free((A)->data); \
+    (A)->data = NULL; \
+    (A)->len = (A)->cap = 0; \
+} while(0)
+#define DA_INSERT(A, IDX, V) do { \
+    if ((IDX) <= (A)->len) { \
+        if ((A)->len == (A)->cap) DA_RESERVE(A, (A)->cap * 2 + 1); \
+        memmove(&(A)->data[(IDX) + 1], &(A)->data[(IDX)], \
+                ((A)->len - (IDX)) * sizeof(*(A)->data)); \
+        (A)->data[(IDX)] = (V); \
+        (A)->len++; \
+    } \
+} while(0)
+
+
 
 // -- Macros ---
 
@@ -60,6 +113,10 @@ typedef enum {
   // texture appearance.
   RN_TEX_FILTER_NEAREST
 } RnTextureFiltering;
+
+typedef struct {
+  float minx, miny, maxx, maxy;
+} RnAABB;
 
 /**
  * @enum RnParagraphAlignment 
@@ -113,6 +170,71 @@ typedef struct {
   // text 
   float width;
 } RnWord;
+
+typedef enum {
+  RN_SEGMENT_TYPE_LINE = 0,
+  RN_SEGMENT_TYPE_QUAD, 
+  RN_SEGMENT_TYPE_CUBIC, 
+  RN_SEGMENT_TYPE_ARC, 
+} RnSegmentType;
+
+typedef struct RnSegment {
+  // Defines the type of the segment (use RN_SEGMENT_**)
+  RnSegmentType type;
+  // Coords of P0
+  float x0, y0;
+  // Coords of P1
+  float x1, y1; 
+  // Coords of P2
+  float x2, y2; 
+  // Coords of P3
+  float x3, y3;
+  uint32_t flags;
+
+  uint32_t _pad;  
+} RnSegment; 
+
+
+typedef enum {
+  RN_STROKE_CAP_BUTT = 1u << 0,
+  RN_STROKE_JOIN_MITER = 1u << 1
+} RnStrokeFlag;
+
+typedef struct RnPathHeader {
+  // Absolute index into RnVectorState.seg_cpu[]
+  uint32_t start;
+  // Number of segments in path
+  uint32_t count; 
+  // Index into RnVectorState.paint_cpu[]
+  uint32_t paint_fill;
+  // index into RnVectorState.paint_cpu[]
+  uint32_t paint_stroke;
+  // The width with which the path should be stroked 
+  float stroke_width;
+  float miter_limit;
+  // Determine how paths should be filled: 0 even-odd, 1 nonzero
+  uint32_t fill_rule;
+
+  uint32_t stroke_flags; 
+} RnPathHeader; 
+
+typedef struct RnPaint {
+  uint32_t type;
+  uint32_t _pad0[3]; 
+
+  float color[4]; 
+
+  float p0x, p0y;
+  float p1x, p1y;
+  float scale_x, scale_y;
+  float repeat_x, repeat_y;
+
+  int32_t tex_index;   
+  int32_t _pad1[3]; 
+} RnPaint;
+
+_Static_assert(sizeof(RnPaint) == 80, "RnPaint must be 80 bytes for std430");
+
 
 /**
  * @struct RnTexture 
@@ -282,42 +404,160 @@ typedef struct {
  * This structure is used to store information about a 
  * rendered vertex and communicate it to the GPU.
  */
-typedef struct {
-  // The position of the vertex in pixel space 
-  vec2 pos;             // 8 Bytes
-  // The border color of the vertex (ZTO)
-  vec4 border_color;    // 16 Byes
-  // The border width of the vertex (px)
-  float border_width;   // 4 Bytes
-  // The color of the vertex (ZTO)
-  vec4 color;           // 16 Bytes
-  // The texture coordinates of the 
-  // vertex (NDC)
-  vec2 texcoord;        // 8 Bytes
-  // The index of the vertex's texture
-  // within the current batch. This is 
-  // set to -1.0 when no texture is rendered 
-  // with the vertex.
-  float tex_index;      // 4 Bytes
-  // The size of the rectangle that this 
-  // vertex is associated to (pixel space)
-  vec2 size_px;         // 8 Bytes
-  // The positon of the rectangle that this 
-  // vertex is associated to (pixel space)
-  vec2 pos_px;          // 8 Bytes
-  // The corner radius of the vertex (px)
-  float corner_radius;  // 4 Bytes
-  // Specifies if the vertex is rendering a text (
-  // 1.0 if text, 0.0 if not)
-  float is_text;
 
-  // Specifies the starting position from where to cull the 
-  // shape that contains the vertex 
-  vec2 min_coord;
-  // Specifies the ending position from where to cull the 
-  // shape that contains the vertex 
-  vec2 max_coord;
-} RnVertex; // 92 Bytes per vertex
+#pragma pack(push, 1)
+typedef struct {
+  float pos[2];
+  float texcoord[2];
+} RnVertex;
+#pragma pack(pop)
+
+typedef struct {
+    float pos[2];       // x, y position in pixels
+    float size[2];      // width, height in pixels
+    float rotation;     // radians
+    uint8_t color[4];   // RGBA (normalized)
+    uint8_t tex_index;  // texture slot 0–31
+    uint8_t _pad[3];    // align to 4 bytes
+} RnInstance;
+
+typedef DA_TYPE(RnSegment) RnVgSegmentList;
+typedef DA_TYPE(RnPathHeader) RnVgPathHeaderList;
+typedef DA_TYPE(RnPaint) RnVgPaintList;
+
+typedef struct {
+  uint32_t seg_ssbo, path_ssbo, paint_ssbo;
+
+  RnVgSegmentList segments;
+  RnVgPathHeaderList paths;
+  RnVgPaintList paints;
+
+} RnVgState;
+
+typedef enum {
+    RN_TILE_EMPTY = 0, 
+    RN_TILE_FULL  = 1,
+    RN_TILE_MIXED = 2,
+} RnTileStatus;
+
+typedef DA_TYPE(RnTileStatus)   RnTileStatusList; 
+
+typedef struct {
+  // The number of X tiles for the entire path 
+  uint32_t tiles_x;
+  // The number of Y tiles for the entire path
+  uint32_t tiles_y;
+  // The size per tile (e.g 16x16)
+  uint32_t tile_size;
+  // the offset into the global ranges array in RnVgState_Compute
+  uint32_t ranges_off; 
+  // the offset index into the global indices array in RnVgState_Compute 
+  uint32_t total_ranges;
+  // Whether or not this path has been built
+  bool built;
+  RnTileStatusList tile_states;
+} RnVgPathTileMeta;
+
+// (mirror of RnVgPathTileMeta but for std430, packed bool as uint32_t)
+typedef struct {
+  // The number of X tiles for the entire path 
+  uint32_t tiles_x;
+  // The number of Y tiles for the entire path
+  uint32_t tiles_y;
+  // The size per tile (e.g 16x16)
+  uint32_t tile_size;
+  // the offset into the global ranges array in RnVgState_Compute
+  uint32_t ranges_off; 
+  // the number of segment ranges the path contants (tile_x * tile_y)
+  uint32_t total_ranges;
+  // total amount of segment indicies the path contains in all tiles 
+  uint32_t total_indices;
+  // Whether or not this path has been built (0/1)
+  uint32_t built;
+} RnVgPathTileMeta_GPU; 
+
+// one job == one tile
+typedef struct {
+  // X pos on atlas texture (topleft)
+  int32_t  base_x;
+  // Y pos on atlas texture (topleft)
+  int32_t  base_y;
+  // width of the tile's path AABB
+  int32_t  rect_w; 
+  // height of the tile's path AABB
+  int32_t  rect_h; 
+  // the id of the path to rasterize (index into gPaths[]) 
+  uint32_t path_id; 
+  // the tile coord X in the paths tile grid
+  uint32_t tile_x;
+  // the tile coord Y in the paths tile grid
+  uint32_t tile_y; 
+  uint32_t _pad; 
+} RnVgTileJob;
+
+typedef struct { uint32_t start, count, flags; } RnVgCSRTileRange;
+
+typedef DA_TYPE(RnVgCSRTileRange)   RnVgTilePathRangeList; 
+typedef DA_TYPE(uint32_t)           RnUintList;     
+typedef DA_TYPE(RnVgPathTileMeta)   RnVgPathTileMetaList;
+typedef DA_TYPE(RnVgTileJob)        RnVgTileJobList;
+
+typedef struct {
+  int32_t x, y, w, h;
+  uint32_t path_id;
+  uint32_t _pad[3]; // pad to 32 btyes
+} RnVgDirtyRect_Compute;
+
+typedef struct {
+  uint32_t compute_program;
+  int32_t tile_size;
+
+  RnVgTilePathRangeList path_tile_ranges;
+  RnVgPathTileMetaList path_tile_metas;
+  RnUintList path_tile_seg_indicies;
+  
+  uint32_t meta_ssbo;  
+  uint32_t meta_cap;
+
+  uint32_t range_ssbo; 
+  uint32_t range_cap;
+
+  uint32_t index_ssbo; 
+  uint32_t index_cap;
+
+  uint32_t job_ssbo; 
+  uint32_t job_cap;
+
+  bool need_shader_upload;
+} RnVgState_Compute;
+
+typedef struct {
+  uint32_t path_id;
+  uint32_t bucket_id;
+
+  uint32_t atlasx, atlasy, atlasw, atlash;
+  uint32_t contentw, contenth;
+  float posx, posy;
+
+  float u0, v0, u1, v1;
+
+  float stroke_w;
+
+  bool in_atlas;
+  bool dirty;
+} RnVgCachedVectorGraphic;
+
+typedef struct {
+  uint32_t texid;
+  uint32_t fboid;
+  uint16_t w, h;
+  ls_atlas2d binpack;
+  int gutter;
+} RnVgCachingAtlas;
+
+typedef DA_TYPE(RnVgDirtyRect_Compute) RnVgDirtyRectList_Compute;
+
+typedef DA_TYPE(RnVgCachedVectorGraphic) RnVgCachedVectorGraphicList;
 
 /**
  * @struct RnRenderState 
@@ -342,14 +582,13 @@ typedef struct {
   // The OpenGL object ID of the vertex buffer 
   // that is used to communicate vertices 
   // to the GPU.
-  uint32_t vbo;
+  uint32_t vbo_static, vbo_instances;
   // The OpenGL object ID of the index buffer 
   // that is used to index vertices.
   uint32_t ibo;
-  // The number of vertices in the current batch
-  uint32_t vert_count;
   // The vertex data in the current batch
-  RnVertex* verts;
+  RnInstance* instances;
+  uint32_t n_instances;
   // The vertex positions that make up a quad (NDC)
   vec4s vert_pos[4];
   // The textures that are rendered within the 
@@ -360,9 +599,18 @@ typedef struct {
   uint32_t tex_index;
   // The number of textures in the current batch
   uint32_t tex_count;
-  // The number of indices within the 
-  // current batch
-  uint32_t index_count;
+
+  RnVgState vec;
+  RnVgState_Compute compute;
+  RnVgCachingAtlas vgcacheatlas;
+  RnVgCachedVectorGraphicList vgcache;
+
+  // The width of the rendered area
+  uint32_t render_w;
+  // The height of the rendered area
+  uint32_t render_h;
+
+  void* vbo_ptr;  
 } RnRenderState;
 
 /**
@@ -404,10 +652,7 @@ typedef struct {
  * @brief Simple dynamic 
  * array structure to cache glyphs
  */
-typedef struct {
-  RnGlyph* glyphs;
-  size_t size, cap;
-} RnGlyphCache;
+typedef DA_TYPE(RnGlyph) RnGlyphCache;
 
 /**
  * @struct RnGlyphCache 
@@ -415,11 +660,7 @@ typedef struct {
  * array structure to cache 
  * harfbuzz text information
  */
-typedef struct {
-  RnHarfbuzzText** texts;
-  size_t size, cap;
-} RnHarfbuzzCache;
-
+typedef DA_TYPE(RnHarfbuzzText*) RnHarfbuzzCache;
 
 /**
  * @struct RnState 
@@ -442,11 +683,6 @@ typedef struct {
   // batch. The value of this variable will 
   // only be correct if used after 'rn_end()'
   uint32_t drawcalls;
-
-  // The width of the rendered area
-  uint32_t render_w;
-  // The height of the rendered area
-  uint32_t render_h;
 
   // The FreeType handle used for loading 
   // fonts
@@ -485,6 +721,7 @@ typedef struct {
 } RnParagraphProps;
 
 // --- Functions ---
+
 
 /**
  * @brief Initializes the Runara library 
@@ -801,6 +1038,8 @@ void rn_clear_color_base_types(
  *
  * @param[in] state The state of the library
  * */
+void rn_begin_batch(RnState* state);
+
 void rn_begin(RnState* state);
 
 /*
@@ -811,85 +1050,9 @@ void rn_begin(RnState* state);
  * */
 void rn_next_batch(RnState* state);
 
-/*
- * @brief Adds a vertex with specified attributes
- * to the current batch within the renderer.
- *
- * @param[in] state The state of the library
- * @param[in] vert_pos The position of the vertex in NDC
- * Use state->render.vert_pos for preset vertex positions.
- * @param[in] transform The transform matrix of the vertex
- * @param[in] pos The pixel space position associated with 
- * the vertex
- * @param[in] size The pixel space size of the rectangle 
- * associated with the vertex
- * @param[in] color The color of the vertex
- * @param[in] border_color The border color of the vertex
- * @param[in] border_width The border width of the vertex  
- * @param[in] corner_radius The corner radius of the vertex
- * @param[in] texcoord The texture coordinates of the vertex
- * @param[in] The index of the vertex's texture within the 
- * current batch. (See rn_tex_index_from_tex())
- *
- * @return The created vertex
- * */
-RnVertex* rn_add_vertex_ex(
-    RnState* state, 
-    vec4s vert_pos,
-    mat4 transform,
-    vec2s pos, 
-    vec2s size, 
-    RnColor color,
-    RnColor border_color,
-    float border_width,
-    float corner_radius,
-    vec2s texcoord, 
-    float tex_index,
-    bool is_text);
-
-/*
- * @brief Uses 'rn_add_vertex_ex()' with texcoords 
- * zero'd out and tex_index set to -1.
- *
- * @param[in] state The state of the library
- * @param[in] vert_pos The position of the vertex in NDC
- * Use state->render.vert_pos for preset vertex positions.
- * @param[in] transform The transform matrix of the vertex
- * @param[in] pos The pixel space position associated with 
- * the vertex
- * @param[in] size The pixel space size of the rectangle 
- * associated with the vertex
- * @param[in] color The color of the vertex
- * @param[in] border_color The border color of the vertex
- * @param[in] border_width The border width of the vertex  
- * @param[in] corner_radius The corner radius of the vertex
- *
- * @return The created vertex
- * *
- * */
-RnVertex* rn_add_vertex(
-    RnState* state, 
-    vec4s vert_pos,
-    mat4 transform,
-    vec2s pos, 
-    vec2s size, 
-    RnColor color,
-    RnColor border_color,
-    float border_width,
-    float corner_radius);
-
-/*
- * @brief Creates a transform 
- * matrix from a scale and translate 
- * matrix created with the given position and 
- * size.
- *
- * @param[in] pos The position of the shape 
- * @param[in] pos The size of the shape 
- * @param[in] rotation_angle The rotation angle (in degrees) of the shape 
- * @param[out] transform The created transform matrix
- * */
-void rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transform);
+RnInstance* rn_add_instance(RnState* state,
+    vec2s pos, vec2s size, float rotation, RnColor color,
+    uint8_t tex_index);
 
 /*
  * @brief Returns the index of 
@@ -899,10 +1062,10 @@ void rn_transform_make(vec2s pos, vec2s size, float rotation_angle, mat4* transf
  * @param[in] state The state of the library 
  * @param[in] tex The texture to get the index from 
  *
- * @return The index (as float) of the texture within
- * the batch. (-1.0 if the texture is not in the batch)
+ * @return The index of the texture within
+ * the batch. (0 if the texture is not in the batch)
  * */
-float rn_tex_index_from_tex(RnState* state, RnTexture tex);
+uint8_t rn_tex_index_from_tex(RnState* state, RnTexture tex);
 
 /*
  * @brief Simple wrapper function 
@@ -916,7 +1079,7 @@ float rn_tex_index_from_tex(RnState* state, RnTexture tex);
 void rn_add_tex_to_batch(RnState* state, RnTexture tex);
 
 /*
- * @brief Ends rendering operations with 
+ * @brief Ends batch rendering operations with 
  * Runara.
  * 
  * This function flushes the batch renderer,
@@ -926,6 +1089,8 @@ void rn_add_tex_to_batch(RnState* state, RnTexture tex);
  * @param[in] state The state of the library 
  * to.
  * */
+void rn_end_batch(RnState* state);
+
 void rn_end(RnState* state);
 
 /*
@@ -1515,3 +1680,53 @@ RnColor rn_color_from_zto(vec4s zto);
  * @return The 0-1 range color
  * */
 vec4s rn_color_to_zto(RnColor color);
+
+bool rn_vg_init_atlas(RnVgCachingAtlas* atlas, uint32_t width, uint32_t height, uint32_t gutter, bool srgb);
+
+void rn_vg_destroy_atlas(RnVgCachingAtlas* atlas); 
+
+void rn_vg_update_item_uvs(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* item); 
+
+RnVgCachedVectorGraphic rn_vg_cache_item(RnVgCachingAtlas* atlas, uint32_t w, uint32_t h, float posx, float posy, float stroke_w, float miter_limit); 
+
+void rn_vg_collect_dirty(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* items, uint32_t nitems, RnVgDirtyRectList_Compute* o_list); 
+
+bool rn_vg_compute_init(RnVgState_Compute* state, const char* compute_src, uint32_t init_cap);
+
+void rn_vg_compute_update(RnVgState_Compute* state, const RnVgCachingAtlas* atlas, const RnVgTileJobList* jobs);
+
+RnPathHeader rn_vg_begin_path(RnState* state);
+
+RnPathHeader rn_vg_end_path(RnState* state);
+
+RnAABB rn_vg_segment_get_aabb(RnSegment segment, float pad);
+
+void rn_vg_path_accumulate_intersecting_segments(
+    RnVgState* state,
+    const uint32_t path_id,
+    const uint32_t n_tiles_x,
+    const uint32_t n_tiles_y,
+    const float path_x, 
+    const float path_y,
+    const uint32_t tilesize,
+    RnUintList* intersects);
+
+void rn_vg_path_build_tiles(
+    RnVgState* state, 
+    uint32_t path_id,
+    const uint32_t tilesize,
+    RnVgPathTileMetaList* metas, 
+    RnVgTilePathRangeList* ranges,
+    RnUintList* indices);
+
+void rn_vg_collect_dirty_tile_jobs(
+    RnState* state,
+    const RnVgCachingAtlas* atlas, 
+    RnVgCachedVectorGraphicList* items,
+    const RnVgPathTileMetaList* metas, 
+    RnVgTileJobList* o_jobs);
+
+void rn_vg_sync_csr(RnVgState_Compute* state,
+                      const RnVgPathTileMetaList* metas_cpu,
+                      const RnVgTilePathRangeList* ranges_cpu,
+                      const RnUintList* indices_cpu);

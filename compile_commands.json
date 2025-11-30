@@ -2,32 +2,26 @@
   {
     "arguments": [
       "/usr/bin/gcc",
+      "-c",
+      "-I/usr/include/freetype2",
+      "-I/usr/include/libpng16",
+      "-I/usr/include/harfbuzz",
+      "-I/usr/include/glib-2.0",
+      "-I/usr/lib/glib-2.0/include",
+      "-I/usr/include/sysprof-6",
+      "-pthread",
       "-Ivendor/glad/include",
       "-Ivendor/stb_image/",
-      "-Ivendor/stb_truetype",
-      "-Ivendor/stb_image_resize",
-      "-DLF_GLFW",
+      "-Ivendor/linesky",
       "-O3",
       "-ffast-math",
-      "-c",
+      "-Wno-stringop-overflow",
       "-o",
-      "lib/leif.o",
-      "leif.c"
+      "lib/runara.o",
+      "runara.c"
     ],
-    "directory": "/home/cococry/dev/leif",
-    "file": "/home/cococry/dev/leif/leif.c",
-    "output": "/home/cococry/dev/leif/lib/leif.o"
-  },
-  {
-    "arguments": [
-      "/usr/bin/gcc",
-      "-c",
-      "-o",
-      "lib/glad.o",
-      "vendor/glad/src/glad.c"
-    ],
-    "directory": "/home/cococry/dev/leif",
-    "file": "/home/cococry/dev/leif/vendor/glad/src/glad.c",
-    "output": "/home/cococry/dev/leif/lib/glad.o"
+    "directory": "/home/cococry/dev/runara",
+    "file": "/home/cococry/dev/runara/runara.c",
+    "output": "/home/cococry/dev/runara/lib/runara.o"
   }
 ]
