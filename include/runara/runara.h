@@ -410,6 +410,7 @@ typedef struct {
   float pos[2];
   float texcoord[2];
 } RnVertex;
+
 #pragma pack(pop)
 
 typedef struct {
@@ -420,145 +421,6 @@ typedef struct {
     uint8_t tex_index;  // texture slot 0–31
     uint8_t _pad[3];    // align to 4 bytes
 } RnInstance;
-
-typedef DA_TYPE(RnSegment) RnVgSegmentList;
-typedef DA_TYPE(RnPathHeader) RnVgPathHeaderList;
-typedef DA_TYPE(RnPaint) RnVgPaintList;
-
-typedef struct {
-  uint32_t seg_ssbo, path_ssbo, paint_ssbo;
-
-  RnVgSegmentList segments;
-  RnVgPathHeaderList paths;
-  RnVgPaintList paints;
-
-} RnVgState;
-
-typedef enum {
-    RN_TILE_EMPTY = 0, 
-    RN_TILE_FULL  = 1,
-    RN_TILE_MIXED = 2,
-} RnTileStatus;
-
-typedef DA_TYPE(RnTileStatus)   RnTileStatusList; 
-
-typedef struct {
-  // The number of X tiles for the entire path 
-  uint32_t tiles_x;
-  // The number of Y tiles for the entire path
-  uint32_t tiles_y;
-  // The size per tile (e.g 16x16)
-  uint32_t tile_size;
-  // the offset into the global ranges array in RnVgState_Compute
-  uint32_t ranges_off; 
-  // the offset index into the global indices array in RnVgState_Compute 
-  uint32_t total_ranges;
-  // Whether or not this path has been built
-  bool built;
-  RnTileStatusList tile_states;
-} RnVgPathTileMeta;
-
-// (mirror of RnVgPathTileMeta but for std430, packed bool as uint32_t)
-typedef struct {
-  // The number of X tiles for the entire path 
-  uint32_t tiles_x;
-  // The number of Y tiles for the entire path
-  uint32_t tiles_y;
-  // The size per tile (e.g 16x16)
-  uint32_t tile_size;
-  // the offset into the global ranges array in RnVgState_Compute
-  uint32_t ranges_off; 
-  // the number of segment ranges the path contants (tile_x * tile_y)
-  uint32_t total_ranges;
-  // total amount of segment indicies the path contains in all tiles 
-  uint32_t total_indices;
-  // Whether or not this path has been built (0/1)
-  uint32_t built;
-} RnVgPathTileMeta_GPU; 
-
-// one job == one tile
-typedef struct {
-  // X pos on atlas texture (topleft)
-  int32_t  base_x;
-  // Y pos on atlas texture (topleft)
-  int32_t  base_y;
-  // width of the tile's path AABB
-  int32_t  rect_w; 
-  // height of the tile's path AABB
-  int32_t  rect_h; 
-  // the id of the path to rasterize (index into gPaths[]) 
-  uint32_t path_id; 
-  // the tile coord X in the paths tile grid
-  uint32_t tile_x;
-  // the tile coord Y in the paths tile grid
-  uint32_t tile_y; 
-  uint32_t _pad; 
-} RnVgTileJob;
-
-typedef struct { uint32_t start, count, flags; } RnVgCSRTileRange;
-
-typedef DA_TYPE(RnVgCSRTileRange)   RnVgTilePathRangeList; 
-typedef DA_TYPE(uint32_t)           RnUintList;     
-typedef DA_TYPE(RnVgPathTileMeta)   RnVgPathTileMetaList;
-typedef DA_TYPE(RnVgTileJob)        RnVgTileJobList;
-
-typedef struct {
-  int32_t x, y, w, h;
-  uint32_t path_id;
-  uint32_t _pad[3]; // pad to 32 btyes
-} RnVgDirtyRect_Compute;
-
-typedef struct {
-  uint32_t compute_program;
-  int32_t tile_size;
-
-  RnVgTilePathRangeList path_tile_ranges;
-  RnVgPathTileMetaList path_tile_metas;
-  RnUintList path_tile_seg_indicies;
-  
-  uint32_t meta_ssbo;  
-  uint32_t meta_cap;
-
-  uint32_t range_ssbo; 
-  uint32_t range_cap;
-
-  uint32_t index_ssbo; 
-  uint32_t index_cap;
-
-  uint32_t job_ssbo; 
-  uint32_t job_cap;
-
-  bool need_shader_upload;
-} RnVgState_Compute;
-
-typedef struct {
-  uint32_t path_id;
-  uint32_t bucket_id;
-
-  uint32_t atlasx, atlasy, atlasw, atlash;
-  uint32_t contentw, contenth;
-  float posx, posy;
-
-  float u0, v0, u1, v1;
-
-  float stroke_w;
-
-  bool in_atlas;
-  bool dirty;
-} RnVgCachedVectorGraphic;
-
-typedef struct {
-  uint32_t texid;
-  uint32_t fboid;
-  uint16_t w, h;
-  ls_atlas2d binpack;
-  int gutter;
-} RnVgCachingAtlas;
-
-typedef DA_TYPE(RnVgDirtyRect_Compute) RnVgDirtyRectList_Compute;
-
-typedef DA_TYPE(RnVgCachedVectorGraphic) RnVgCachedVectorGraphicList;
-
 /**
  * @struct RnRenderState 
  * @brief Defines the state of the 2D batch renderer 
@@ -599,11 +461,6 @@ typedef struct {
   uint32_t tex_index;
   // The number of textures in the current batch
   uint32_t tex_count;
-
-  RnVgState vec;
-  RnVgState_Compute compute;
-  RnVgCachingAtlas vgcacheatlas;
-  RnVgCachedVectorGraphicList vgcache;
 
   // The width of the rendered area
   uint32_t render_w;
@@ -1680,53 +1537,3 @@ RnColor rn_color_from_zto(vec4s zto);
  * @return The 0-1 range color
  * */
 vec4s rn_color_to_zto(RnColor color);
-
-bool rn_vg_init_atlas(RnVgCachingAtlas* atlas, uint32_t width, uint32_t height, uint32_t gutter, bool srgb);
-
-void rn_vg_destroy_atlas(RnVgCachingAtlas* atlas); 
-
-void rn_vg_update_item_uvs(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* item); 
-
-RnVgCachedVectorGraphic rn_vg_cache_item(RnVgCachingAtlas* atlas, uint32_t w, uint32_t h, float posx, float posy, float stroke_w, float miter_limit); 
-
-void rn_vg_collect_dirty(RnVgCachingAtlas* atlas, RnVgCachedVectorGraphic* items, uint32_t nitems, RnVgDirtyRectList_Compute* o_list); 
-
-bool rn_vg_compute_init(RnVgState_Compute* state, const char* compute_src, uint32_t init_cap);
-
-void rn_vg_compute_update(RnVgState_Compute* state, const RnVgCachingAtlas* atlas, const RnVgTileJobList* jobs);
-
-RnPathHeader rn_vg_begin_path(RnState* state);
-
-RnPathHeader rn_vg_end_path(RnState* state);
-
-RnAABB rn_vg_segment_get_aabb(RnSegment segment, float pad);
-
-void rn_vg_path_accumulate_intersecting_segments(
-    RnVgState* state,
-    const uint32_t path_id,
-    const uint32_t n_tiles_x,
-    const uint32_t n_tiles_y,
-    const float path_x, 
-    const float path_y,
-    const uint32_t tilesize,
-    RnUintList* intersects);
-
-void rn_vg_path_build_tiles(
-    RnVgState* state, 
-    uint32_t path_id,
-    const uint32_t tilesize,
-    RnVgPathTileMetaList* metas, 
-    RnVgTilePathRangeList* ranges,
-    RnUintList* indices);
-
-void rn_vg_collect_dirty_tile_jobs(
-    RnState* state,
-    const RnVgCachingAtlas* atlas, 
-    RnVgCachedVectorGraphicList* items,
-    const RnVgPathTileMetaList* metas, 
-    RnVgTileJobList* o_jobs);
-
-void rn_vg_sync_csr(RnVgState_Compute* state,
-                      const RnVgPathTileMetaList* metas_cpu,
-                      const RnVgTilePathRangeList* ranges_cpu,
-                      const RnUintList* indices_cpu);
