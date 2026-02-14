@@ -90,7 +90,7 @@ before installing Runara:
 
 ### Dependencies
 ```console
-freetype, harfbuzz, gl, make, gcc
+freetype, harfbuzz, gl, make, gcc, cglm
 ```
 
 After installing the dependencies just run:
