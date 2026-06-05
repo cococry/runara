@@ -5,9 +5,7 @@
 Runara aims to be as small and as fast as possible. The code is contained
 in ~4k lines of code that feature a complete batch rendering system, 
 glyph loading with [freetype](http://freetype.org/), text shaping with [harfbuzz](https://harfbuzz.github.io/),
-custom text layouting & alignment
-a glyph caching system, a (*in progress*) vector rendering engine
-and much more. 
+custom text layouting & alignment a glyph caching system and much more. 
 
 ---
 
