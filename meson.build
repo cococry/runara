@@ -19,8 +19,8 @@ dep_m = cc.find_library('m', required: true)
 
 backend_option = get_option('backends')
 
-build_opengl = backend_option == 'opengl' or backend_option == 'both'
-build_vulkan = backend_option == 'vulkan' or backend_option == 'both'
+build_opengl = backend_option == 'opengl' or backend_option == 'all'
+build_vulkan = backend_option == 'vulkan' or backend_option == 'all'
 
 runara_sources = [
   'src/runara.c',

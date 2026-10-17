@@ -16,6 +16,7 @@ struct rn_state_t {
 };
 
 static void *_default_alloc(size_t size, void *ctx);
+static void *_default_realloc(void *ptr, size_t size, void *ctx);
 static void _default_free(void *ptr, void *ctx);
 static void _log_init(struct rn_state_t *state,
                       const struct rn_log_options_t *log_opts);
@@ -24,6 +25,11 @@ static const char *_backend_type_to_str(enum rn_backend_type_t type);
 static void *_default_alloc(size_t size, void *ctx) {
   (void)ctx;
   return malloc(size);
+}
+
+static void *_default_realloc(void *ptr, size_t size, void *ctx) {
+  (void)ctx;
+  return realloc(ptr, size);
 }
 
 static void _default_free(void *ptr, void *ctx) {
@@ -79,10 +85,14 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
   if (!allocator.alloc && !allocator.free) {
     allocator.alloc = _default_alloc;
     allocator.free = _default_free;
+    allocator.realloc = _default_realloc;
   } else if (!allocator.alloc || !allocator.free) {
     RN_ERROR_HEADLESS("allocator requires both alloc and free callbacks");
     return NULL;
   }
+
+  if (!allocator.realloc)
+    allocator.realloc = _default_realloc;
 
   struct rn_state_t *state = allocator.alloc(sizeof(*state), allocator.ctx);
 
@@ -99,7 +109,9 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
   _log_init(state, &opts.log);
   RN_TRACE(state->log, "Log initialized");
 
-  if (!rn_backend_implement(&state->impl, opts.render_backend)) {
+
+  if (!rn_backend_implement(&state->impl, opts.render_backend,
+                            &state->allocator, &state->log, &opts.gl_load_proc)) {
     RN_FATAL(state->log, "Failed to implement rendering backend (Backend: %s)",
              _backend_type_to_str(opts.render_backend));
     return NULL;
@@ -121,6 +133,8 @@ void rn_state_fini(struct rn_state_t *state) {
   }
 
   RN_TRACE(state->log, "destroying Runara state");
+
+  rn_backend_fini(&state->impl, state->backend_type, &state->allocator);
 
   if (state->owns_log_stream)
     fclose(state->log.stream);

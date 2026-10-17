@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include "src/log.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -191,15 +192,33 @@ struct rn_backend_impl_t {
                                      rn_texture_handle_t texture);
 };
 
-bool rn_backend_implement(
-    struct rn_backend_impl_t *impl,
-    enum rn_backend_type_t type
-);
+bool rn_backend_implement(struct rn_backend_impl_t *impl,
+                          enum rn_backend_type_t type,
+                          const struct rn_allocator_t *alloc,
+                          const struct rn_log_t *log, void *backend_info);
 
 #if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
-bool rn_gl_backend_implement(struct rn_backend_impl_t *impl);
+bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
+                             const struct rn_allocator_t *alloc,
+                             const struct rn_log_t *log, void *backend_info);
 #endif
 
 #if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
-bool rn_vk_backend_implement(struct rn_backend_impl_t *impl);
+bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
+                             const struct rn_allocator_t *alloc,
+                             const struct rn_log_t *log, void *backend_info);
+#endif
+
+void rn_backend_fini(struct rn_backend_impl_t *impl,
+                     enum rn_backend_type_t type,
+                     const struct rn_allocator_t *alloc);
+
+#if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
+void rn_gl_backend_fini(struct rn_backend_impl_t *impl,
+                        const struct rn_allocator_t *alloc);
+#endif
+
+#if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
+void rn_vk_backend_fini(struct rn_backend_impl_t *impl,
+                        const struct rn_allocator_t *alloc);
 #endif
