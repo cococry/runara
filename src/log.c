@@ -65,35 +65,43 @@ void rn_log_emit(const struct rn_log_t *log, enum rn_log_level_t level,
 
   bool fatal = level == RN_LL_FATAL;
 
-  if (log && log->quiet && !fatal)
-    return;
-
   if (log && !log->verbose && level == RN_LL_TRACE)
     return;
 
   FILE *terminal = level >= RN_LL_ERR ? stderr : stdout;
-  FILE *stream = terminal;
+  FILE *logfile = NULL;
 
-  if (log && log->stream) {
-    stream = log->stream;
-
-    if (level >= RN_LL_ERR && stream == stdout)
-      stream = stderr;
-  }
+  if (log && log->stream &&
+      log->stream != stdout && log->stream != stderr)
+    logfile = log->stream;
 
   va_list args;
   va_start(args, fmt);
 
-  va_list copy;
-  va_copy(copy, args);
-  rn_log_write(stream, level, subsystem, function, file, line, fmt, copy);
-  va_end(copy);
-
-  if (log && log->stream && log->stream != stdout && log->stream != stderr &&
-      level != RN_LL_INFO) {
-
+  if (logfile) {
+    va_list copy;
     va_copy(copy, args);
-    rn_log_write(terminal, level, subsystem, function, file, line, fmt, copy);
+
+    rn_log_write(logfile, level, subsystem, function, file, line, fmt, copy);
+
+    va_end(copy);
+  }
+
+  if (!log || !log->quiet || fatal) {
+    FILE *stream = terminal;
+
+    if (log && (log->stream == stdout || log->stream == stderr)) {
+      stream = log->stream;
+
+      if (level >= RN_LL_ERR && stream == stdout)
+        stream = stderr;
+    }
+
+    va_list copy;
+    va_copy(copy, args);
+
+    rn_log_write(stream, level, subsystem, function, file, line, fmt, copy);
+
     va_end(copy);
   }
 

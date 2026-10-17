@@ -26,7 +26,7 @@ int main(void) {
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
 
-  struct rn_init_options_t opts = {.log = {.verbose = true, .logfile = true}, .render_backend = RN_RENDER_BACKEND_OPENGL,
+  struct rn_init_options_t opts = {.log = {.verbose = true, .logfile = true, .quiet = true}, .render_backend = RN_RENDER_BACKEND_OPENGL,
   .gl_load_proc = (rn_gl_load_proc)glfwGetProcAddress};
   struct rn_state_t *state = rn_state_init(&opts);
 

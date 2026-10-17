@@ -19,6 +19,12 @@
       RN_ERROR_HEADLESS(__VA_ARGS__);                                          \
   } while (0)
 
+#define _RN_GL_LOG_TRACE(log, ...)                                             \
+  do {                                                                         \
+    if ((log) != NULL)                                                         \
+      RN_TRACE(*(log), __VA_ARGS__);                                           \
+  } while (0)
+
 struct rn_gl_buffer {
   GLuint gl_id;
   GLenum target;
@@ -388,6 +394,10 @@ static rn_backend_result_t _create_buffer(void *backend_ctx,
   *out_handle = (rn_buffer_handle_t)ctx->buffer_count;
   ctx->buffers[ctx->buffer_count++] =
       (struct rn_gl_buffer){gl_id, target, desc->size, true};
+
+  _RN_GL_LOG_TRACE(ctx->log, "created buffer %u (GL=%u, size=%zu bytes)",
+                   (unsigned int)*out_handle, (unsigned int)gl_id, desc->size);
+
   return RN_OK;
 }
 
@@ -401,6 +411,9 @@ static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle) {
 
   if (!gpu_buffer)
     return;
+
+  _RN_GL_LOG_TRACE(ctx->log, "destroying buffer %u (GL=%u)",
+                   (unsigned int)handle, (unsigned int)gpu_buffer->gl_id);
 
   glDeleteBuffers(1, &gpu_buffer->gl_id);
   gpu_buffer->alive = false;
@@ -621,6 +634,10 @@ _create_pipeline(void *backend_ctx, const struct rn_pipeline_desc_t *desc,
   }
   *out_handle = (rn_pipeline_handle_t)ctx->pipeline_count;
   ctx->pipelines[ctx->pipeline_count++] = gpu_pipeline;
+
+  _RN_GL_LOG_TRACE(ctx->log, "created pipeline %u (GL program=%u)",
+                   (unsigned int)*out_handle, (unsigned int)gpu_pipeline.gl_id);
+
   return RN_OK;
 
 fail:
@@ -642,8 +659,12 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
   if (!gpu_pipeline)
     return;
 
+  _RN_GL_LOG_TRACE(ctx->log, "destroying pipeline %u (GL program=%u)",
+                   (unsigned int)handle, (unsigned int)gpu_pipeline->gl_id);
+
   if (ctx->pipeline == handle)
     ctx->pipeline = RN_INVALID_HANDLE;
+
   glDeleteProgram(gpu_pipeline->gl_id);
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
        ++binding_index)
@@ -903,6 +924,11 @@ _create_texture_internal(void *backend_ctx, GLenum target, uint32_t width,
   *out_handle = (rn_texture_handle_t)ctx->texture_count;
   ctx->textures[ctx->texture_count++] =
       (struct rn_gl_texture){gl_id, target, width, height, layers, true};
+
+  _RN_GL_LOG_TRACE(ctx->log, "created texture %u (GL=%u, %ux%u, layers=%u)",
+                   (unsigned int)*out_handle, (unsigned int)gl_id, width,
+                   height, layers);
+
   return RN_OK;
 }
 
@@ -978,6 +1004,9 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
   if (!gpu_texture)
     return;
 
+  _RN_GL_LOG_TRACE(ctx->log, "destroying texture %u (GL=%u)",
+                   (unsigned int)handle, (unsigned int)gpu_texture->gl_id);
+
   glDeleteTextures(1, &gpu_texture->gl_id);
   gpu_texture->alive = false;
 }
@@ -1007,9 +1036,13 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 
+  _RN_GL_LOG_TRACE(log, "initializing OpenGL backend");
+
   if (!glad_loaded) {
+    _RN_GL_LOG_TRACE(log, "loading OpenGL function pointers through GLAD");
+
     if (!backend_info) {
-      RN_ERROR(*log, "OpenGL loader was not provided");
+      _RN_GL_LOG_ERROR(log, "OpenGL loader was not provided");
       return false;
     }
 
@@ -1022,6 +1055,9 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
     }
 
     glad_loaded = true;
+    _RN_GL_LOG_TRACE(log, "GLAD function loading succeeded");
+  } else {
+    _RN_GL_LOG_TRACE(log, "reusing previously loaded GLAD functions");
   }
 
   if (!GLAD_GL_VERSION_3_3) {
@@ -1029,6 +1065,9 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                      "OpenGL 3.3 is unavailable or GLAD is not initialized");
     return false;
   }
+
+  _RN_GL_LOG_TRACE(log, "OpenGL 3.3 support confirmed");
+  _RN_GL_LOG_TRACE(log, "allocating OpenGL backend state");
 
   struct rn_gl_context *ctx = alloc->alloc(sizeof(*ctx), alloc->ctx);
 
@@ -1038,6 +1077,8 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   }
 
   memset(ctx, 0, sizeof(*ctx));
+
+  _RN_GL_LOG_TRACE(log, "creating backend vertex array");
 
   glGenVertexArrays(1, &ctx->vertex_array);
   if (!ctx->vertex_array) {
@@ -1059,6 +1100,9 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   *impl = _rn_gl_dispatch;
   impl->ctx = ctx;
 
+  _RN_GL_LOG_TRACE(log, "OpenGL backend initialized (VAO=%u)",
+                   (unsigned int)ctx->vertex_array);
+
   return true;
 }
 
@@ -1071,6 +1115,11 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
 
   if (!ctx)
     return;
+
+  _RN_GL_LOG_TRACE(ctx->log,
+                   "tearing down OpenGL backend (%zu buffer slots, %zu texture "
+                   "slots, %zu pipeline slots)",
+                   ctx->buffer_count, ctx->texture_count, ctx->pipeline_count);
 
   for (size_t resource_index = 0; resource_index < ctx->buffer_count;
        ++resource_index)
@@ -1094,11 +1143,18 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
             ctx->alloc->ctx);
     }
 
+  _RN_GL_LOG_TRACE(ctx->log, "destroying backend vertex array (VAO=%u)",
+                   (unsigned int)ctx->vertex_array);
+
   glDeleteVertexArrays(1, &ctx->vertex_array);
+
+  _RN_GL_LOG_TRACE(ctx->log, "releasing OpenGL backend CPU resources");
 
   ctx->alloc->free(ctx->buffers, ctx->alloc->ctx);
   ctx->alloc->free(ctx->textures, ctx->alloc->ctx);
   ctx->alloc->free(ctx->pipelines, ctx->alloc->ctx);
+
+  _RN_GL_LOG_TRACE(ctx->log, "OpenGL backend teardown complete");
   ctx->alloc->free(ctx, ctx->alloc->ctx);
 
   memset(backend, 0, sizeof(*backend));
