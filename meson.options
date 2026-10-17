@@ -1,0 +1,6 @@
+option(
+  'examples',
+  type: 'boolean',
+  value: false,
+  description: 'Build Runara examples'
+)

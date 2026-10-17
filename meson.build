@@ -23,6 +23,7 @@ subdir('vendor/linesky')
 runara_inc = include_directories('include')
 runara_sources = [
   'src/runara.c',
+  'src/log.c',
   glad_c, 
 ]
 
@@ -83,3 +84,7 @@ runara_dep = declare_dependency(
     dep_m,
   ]
 )
+
+if get_option('examples')
+  subdir('examples')
+endif
