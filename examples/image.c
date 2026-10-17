@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
   struct rn_init_options_t options = {
       .render_backend = RN_RENDER_BACKEND_OPENGL,
       .gl_load_proc = _gl_load_proc,
-      .log = {.verbose = true},
+      .log = {.verbose = true, .logfile = true},
   };
 
   state = rn_state_init(&options);

@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define RN_SUBSYS_NAME "RENDERER"
@@ -71,28 +72,67 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
   if (renderer->instance_count >= RN_RENDERER_MAX_INSTANCES)
     return RN_ERROR_OVERFLOW;
 
-  /* Merge only adjacent compatible quads to preserve submission order. */
-  if (renderer->batch_count > 0) {
+  struct rn_draw_batch_t *batch = NULL;
+  uint32_t texture_slot = 0;
+
+  if (renderer->batch_count) {
     struct rn_draw_batch_t *last =
         &renderer->batches[renderer->batch_count - 1];
 
-    if (last->pipeline == pipeline && last->texture == texture) {
-      ++last->instance_count;
-      renderer->instances[renderer->instance_count++] = *instance;
-      return RN_OK;
+    if (last->pipeline == pipeline) {
+      /* merge batches by pipeline */
+      if (pipeline == renderer->atlas_pipeline) {
+        /* atlas instances all share the same texture, so we can just merge */
+        batch = last;
+      } else {
+        /* find if we already have the texture in the last batch */
+        for (uint32_t slot = 0; slot < last->texture_count; ++slot) {
+          if (last->textures[slot] == texture) {
+            batch = last;
+            texture_slot = slot;
+            break;
+          }
+        }
+
+        /* insert the texture into the last batch if we have space */
+        if (!batch && last->texture_count < RN_RENDERER_MAX_TEXTURE_SLOTS) {
+          texture_slot = last->texture_count;
+          last->textures[last->texture_count++] = texture;
+          batch = last;
+        }
+      }
     }
   }
 
-  struct rn_draw_batch_t *batch = &renderer->batches[renderer->batch_count++];
+  if (!batch) {
+    if (renderer->batch_count >= RN_RENDERER_MAX_INSTANCES)
+      return RN_ERROR_OVERFLOW;
 
-  *batch = (struct rn_draw_batch_t){
-      .pipeline = pipeline,
-      .texture = texture,
-      .first_instance = renderer->instance_count,
-      .instance_count = 1,
-  };
+    /* make new batch */
+    batch = &renderer->batches[renderer->batch_count++];
+    *batch = (struct rn_draw_batch_t){
+        .pipeline = pipeline,
+        .first_instance = renderer->instance_count,
+    };
 
-  renderer->instances[renderer->instance_count++] = *instance;
+    if (pipeline == renderer->dedicated_pipeline) {
+      batch->textures[0] = texture;
+      batch->texture_count = 1;
+    } else {
+      batch->textures[0] = renderer->atlas_texture;
+      batch->texture_count = 1;
+    }
+  }
+
+  struct rn_quad_instance_t queued = *instance;
+
+  /* params.x selects the sampler2D slot for dedicated images. */
+  if (pipeline == renderer->dedicated_pipeline)
+    queued.params[0] = (float)texture_slot;
+
+  renderer->instances[renderer->instance_count++] = queued;
+  ++batch->instance_count;
+
   return RN_OK;
 }
 
@@ -140,8 +180,11 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
       !backend->create_texture_array || !allocator->alloc || !allocator->free)
     return RN_ERROR_BAD_STATE;
 
-  RN_TRACE(state->log, "initializing 2D renderer (max instances=%u)",
-           (unsigned)RN_RENDERER_MAX_INSTANCES);
+  RN_TRACE(
+      state->log,
+      "initializing 2D renderer (max instances=%u, dedicated texture slots=%u)",
+      (unsigned)RN_RENDERER_MAX_INSTANCES,
+      (unsigned)RN_RENDERER_MAX_TEXTURE_SLOTS);
 
   memset(renderer, 0, sizeof(*renderer));
   renderer->vertex_buffer = RN_INVALID_HANDLE;
@@ -204,15 +247,29 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
        .type = RN_UNIFORM_VEC2,
        .stage = RN_SHADER_VERTEX},
   };
-  const struct rn_uniform_binding_t dedicated_uniforms[] = {
-      {.name = "u_texture",
-       .type = RN_UNIFORM_SAMPLER_2D,
-       .stage = RN_SHADER_FRAGMENT,
-       .binding = 0},
-      {.name = "u_screen_size",
-       .type = RN_UNIFORM_VEC2,
-       .stage = RN_SHADER_VERTEX},
-  };
+  /* Each sampler is assigned to its matching texture unit at creation. */
+  struct rn_uniform_binding_t
+      dedicated_uniforms[RN_RENDERER_MAX_TEXTURE_SLOTS + 1] = {0};
+  char sampler_names[RN_RENDERER_MAX_TEXTURE_SLOTS][24];
+
+  for (uint32_t slot = 0; slot < RN_RENDERER_MAX_TEXTURE_SLOTS; ++slot) {
+    snprintf(sampler_names[slot], sizeof(sampler_names[slot]), "u_textures[%u]",
+             (unsigned)slot);
+
+    dedicated_uniforms[slot] = (struct rn_uniform_binding_t){
+        .name = sampler_names[slot],
+        .type = RN_UNIFORM_SAMPLER_2D,
+        .stage = RN_SHADER_FRAGMENT,
+        .binding = slot,
+    };
+  }
+
+  dedicated_uniforms[RN_RENDERER_MAX_TEXTURE_SLOTS] =
+      (struct rn_uniform_binding_t){
+          .name = "u_screen_size",
+          .type = RN_UNIFORM_VEC2,
+          .stage = RN_SHADER_VERTEX,
+      };
 
   const struct rn_pipeline_desc_t atlas_desc = {
       .shader = RN_PIPELINE_UI_QUAD_ATLAS,
@@ -269,11 +326,8 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
            (unsigned)renderer->atlas_texture, (unsigned)RN_RENDERER_ATLAS_WIDTH,
            (unsigned)RN_RENDERER_ATLAS_HEIGHT,
            (unsigned)RN_RENDERER_ATLAS_LAYERS);
-  RN_TRACE(state->log,
-           "2D renderer ready: solid rectangles and atlas images use the atlas "
-           "pipeline; "
-           "dedicated textures use the dedicated pipeline; adjacent compatible "
-           "quads are batched in submission order");
+
+  RN_TRACE(state->log, "High level 2D renderer ready");
 
   return RN_OK;
 
@@ -428,9 +482,12 @@ rn_result_t rn_end(struct rn_state_t *state) {
         active_pipeline = batch->pipeline;
       }
 
-      result = backend->set_texture(backend->ctx, 0, batch->texture);
-      if (result != RN_OK)
-        goto finish;
+      for (uint32_t slot = 0; slot < batch->texture_count; ++slot) {
+        result =
+            backend->set_texture(backend->ctx, slot, batch->textures[slot]);
+        if (result != RN_OK)
+          goto finish;
+      }
 
       const struct rn_draw_indexed_instanced_t draw = {
           .index_count = 6,
@@ -474,7 +531,7 @@ rn_result_t rn_texture_upload(struct rn_state_t *state, uint32_t width,
   RN_RENDERER_CHECK(
       backend->create_texture(backend->ctx, &desc, rgba, byte_count, &texture));
 
-  RN_TRACE(state->log, "uploaded dedicated texture %u (%ux%u, %zu bytes)",
+  RN_TRACE(state->log, "uploaded dedicated RGBA8 texture %u (%ux%u, %zu bytes)",
            (unsigned)texture, (unsigned)width, (unsigned)height,
            (size_t)width * height * 4u);
 
@@ -546,7 +603,7 @@ rn_result_t rn_atlas_upload(struct rn_state_t *state, uint32_t width,
              (unsigned)layer);
 
   RN_TRACE(state->log,
-           "uploaded %ux%u image to atlas layer %u at (%u, %u)",
+           "uploaded %ux%u RGBA8 image to atlas layer %u at (%u, %u)",
            (unsigned)width, (unsigned)height, (unsigned)layer,
            (unsigned)position_x, (unsigned)position_y);
 
