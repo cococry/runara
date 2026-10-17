@@ -124,6 +124,8 @@ struct rn_backend_impl_t {
   rn_result_t (*begin_frame)(void *ctx, uint32_t x, uint32_t y, uint32_t width,
                              uint32_t height);
 
+  rn_result_t (*clear_color)(void *ctx, rn_color_t color);
+
   rn_result_t (*end_frame)(void *ctx);
 
   /* Buffers */

@@ -70,7 +70,7 @@ int main(int argc, char **argv) {
       .log = {.verbose = true, .logfile = true},
   };
 
-  state = rn_state_init(&options);
+  state = rn_state_init(&options, WINDOW_WIDTH, WINDOW_HEIGHT);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara\n");

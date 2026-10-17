@@ -1,5 +1,6 @@
 example_sources = [
   'image',
+  'rect',
 ]
 
 configure_file(

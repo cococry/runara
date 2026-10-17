@@ -93,6 +93,8 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image);
 
 rn_result_t rn_begin(struct rn_state_t *state);
 
+rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color);
+
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
                          struct rn_color_t color);
 
@@ -101,7 +103,8 @@ rn_result_t rn_draw_texture(struct rn_state_t *state,
                             struct rn_rect_t rect, struct rn_color_t tint);
 rn_result_t rn_end(struct rn_state_t *state);
 
-struct rn_state_t *rn_state_init(const struct rn_init_options_t *options);
+struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
+                                 uint32_t init_width, uint32_t init_height);
 
 void rn_state_fini(struct rn_state_t *state);
 

@@ -403,6 +403,21 @@ rn_result_t rn_begin(struct rn_state_t *state) {
   return RN_OK;
 }
 
+rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
+  if (!state)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct rn_renderer_t *renderer = &state->renderer;
+  struct rn_backend_impl_t *backend = &state->backend;
+
+  if (!renderer->initialized)
+    return RN_ERROR_BAD_STATE;
+
+  RN_RENDERER_CHECK(backend->clear_color(backend->ctx, color));
+
+  return RN_OK;
+}
+
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
                          struct rn_color_t color) {
   if (!state)

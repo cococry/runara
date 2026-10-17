@@ -85,6 +85,7 @@ static rn_result_t _ensure_textures(struct rn_gl_context *ctx);
 static rn_result_t _ensure_pipelines(struct rn_gl_context *ctx);
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
+static rn_result_t _clear_color(void *ctx, rn_color_t color);
 static rn_result_t _end_frame(void *backend_ctx);
 static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
@@ -141,6 +142,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 
 static const struct rn_backend_impl_t _rn_gl_dispatch = {
     .begin_frame = _begin_frame,
+    .clear_color = _clear_color,
     .end_frame = _end_frame,
     .create_buffer = _create_buffer,
     .destroy_buffer = _destroy_buffer,
@@ -341,6 +343,18 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
   glViewport((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height);
   glBindVertexArray(ctx->vertex_array);
+  return _gl_check(ctx->log, __func__);
+}
+
+static rn_result_t _clear_color(void *backend_ctx, rn_color_t color) {
+  struct rn_gl_context *ctx = backend_ctx;
+
+  if (!ctx)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  glClearColor(color.r, color.g, color.b, color.a);
+  glClear(GL_COLOR_BUFFER_BIT);
+
   return _gl_check(ctx->log, __func__);
 }
 

@@ -1,26 +1,21 @@
 <img align="left" style="width:128px" src="https://github.com/cococry/runara/blob/master/branding/logo.png" width="128px">
 
-**Runara is a simple, well documented, bloatless 2D graphics library**
+**Runara is a simple, well documented, bloatless 2D texture library**
 
-Runara aims to be as small and as fast as possible. The code is contained
-in ~4k lines of code that feature a complete batch rendering system, 
-glyph loading with [freetype](http://freetype.org/), text shaping with [harfbuzz](https://harfbuzz.github.io/),
-custom text layouting & alignment a glyph caching system
-and much more. 
-
+Runara is a high level abstraction over both Vulkan and OpenGL that renders and manages 2D textures and rectangles. 
+It implements an instanced batch renderer that efficiently draws queued lists of textures and rectangles in an immediate-mode
+manner. One can upload texture data into Runara's managed texture atlas or to directly to a dedicated texture.  
 ---
 
 <br>
 
 ## Features
-- Efficient batch rendering system
-- Support for shader operations like rounded corners
-- Comple text rendering & loading engine
-- Extensivly documented functions & structures
-- Support for loading & rendering images
-- No global or hidden state
-- Built to make extending & modifing as straightforward as possible
-- Small and readable codebase
+- Vulkan 1.0 backend implementation  
+- OpenGL 3.3 backend implementation  
+- Efficient instanced & batched 2D renderer 
+- Merging of adjacent render batches
+- Optimized 3D texture atlas  
+- Ability to supply custom shaders 
 
 ## Example using GLFW
 

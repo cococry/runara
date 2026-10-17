@@ -87,7 +87,8 @@ const char *rn_result_to_str(rn_result_t result) {
   }
 }
 
-struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
+struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
+                                 uint32_t init_width, uint32_t init_height) {
   struct rn_init_options_t opts = {0};
 
   if (options)
@@ -133,6 +134,9 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
   }
   state->backend_init = true;
   state->backend_type = opts.render_backend;
+
+  state->renderer.canvas.width = init_width;
+  state->renderer.canvas.height = init_height;
 
   RN_TRACE(state->log, "Render backend initialized (Backend: %s)",
            _backend_type_to_str(opts.render_backend));
