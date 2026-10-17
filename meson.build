@@ -26,6 +26,7 @@ runara_sources = [
   'src/runara.c',
   'src/log.c',
   'src/backend.c',
+  'src/renderer.c',
 ]
 
 runara_inc = include_directories('include')

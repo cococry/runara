@@ -8,20 +8,6 @@
 
 #include <runara/runara.h>
 
-typedef enum rn_backend_result_t {
-  RN_OK = 0,
-  RN_ERROR_INVALID_ARGUMENT,
-  RN_ERROR_OUT_OF_MEMORY,
-  RN_ERROR_BACKEND,
-  RN_ERROR_BAD_STATE,
-  RN_ERROR_OVERFLOW,
-  RN_ERROR_ATLAS_FULL
-} rn_backend_result_t;
-
-typedef uint32_t rn_buffer_handle_t;
-typedef uint32_t rn_texture_handle_t;
-typedef uint32_t rn_pipeline_handle_t;
-
 #define RN_INVALID_HANDLE UINT32_MAX
 
 typedef enum rn_buffer_target_t {
@@ -135,60 +121,60 @@ struct rn_backend_impl_t {
   void *ctx;
 
   /* Frame lifecycle */
-  rn_backend_result_t (*begin_frame)(void *ctx, uint32_t width,
-                                     uint32_t height);
+  rn_result_t (*begin_frame)(void *ctx, uint32_t x, uint32_t y, uint32_t width,
+                             uint32_t height);
 
-  rn_backend_result_t (*end_frame)(void *ctx);
+  rn_result_t (*end_frame)(void *ctx);
 
   /* Buffers */
-  rn_backend_result_t (*create_buffer)(void *ctx,
+  rn_result_t (*create_buffer)(void *ctx,
                                        const struct rn_buffer_desc_t *desc,
                                        rn_buffer_handle_t *out);
 
   void (*destroy_buffer)(void *ctx, rn_buffer_handle_t buffer);
 
-  rn_backend_result_t (*write_buffer)(void *ctx, rn_buffer_handle_t buffer,
+  rn_result_t (*write_buffer)(void *ctx, rn_buffer_handle_t buffer,
                                       uint32_t binding, size_t offset,
                                       const void *data, size_t size);
 
   /* Pipelines */
-  rn_backend_result_t (*create_pipeline)(void *ctx,
+  rn_result_t (*create_pipeline)(void *ctx,
                                          const struct rn_pipeline_desc_t *desc,
                                          rn_pipeline_handle_t *out);
 
   void (*destroy_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
 
-  rn_backend_result_t (*set_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
+  rn_result_t (*set_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
 
-  rn_backend_result_t (*set_vertex_buffer)(void *ctx, rn_buffer_handle_t buffer,
+  rn_result_t (*set_vertex_buffer)(void *ctx, rn_buffer_handle_t buffer,
                                            uint32_t binding);
 
-  rn_backend_result_t (*set_index_buffer)(void *ctx, rn_buffer_handle_t buffer);
+  rn_result_t (*set_index_buffer)(void *ctx, rn_buffer_handle_t buffer);
 
-  rn_backend_result_t (*set_uniform_2f)(void *ctx,
+  rn_result_t (*set_uniform_2f)(void *ctx,
                                         rn_pipeline_handle_t pipeline,
                                         const char *name, float x, float y);
 
-  rn_backend_result_t (*draw_indexed_instanced)(
+  rn_result_t (*draw_indexed_instanced)(
       void *ctx, const struct rn_draw_indexed_instanced_t *draw);
 
   /* Textures */
-  rn_backend_result_t (*create_texture)(void *ctx,
+  rn_result_t (*create_texture)(void *ctx,
                                         const struct rn_texture_desc_t *desc,
                                         const void *rgba_pixels, size_t size,
                                         rn_texture_handle_t *out);
 
-  rn_backend_result_t (*create_texture_array)(
+  rn_result_t (*create_texture_array)(
       void *ctx, const struct rn_texture_array_desc_t *desc,
       rn_texture_handle_t *out);
 
-  rn_backend_result_t (*write_texture_array_layer)(
+  rn_result_t (*write_texture_array_layer)(
       void *ctx, const struct rn_texture_array_write_t *write,
       const void *rgba_pixels, size_t size);
 
   void (*destroy_texture)(void *ctx, rn_texture_handle_t texture);
 
-  rn_backend_result_t (*set_texture)(void *ctx, uint32_t slot,
+  rn_result_t (*set_texture)(void *ctx, uint32_t slot,
                                      rn_texture_handle_t texture);
 };
 

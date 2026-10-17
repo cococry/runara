@@ -1,6 +1,12 @@
 example_sources = [
-  'basic',
+  'image',
 ]
+
+configure_file(
+  input: 'image.png',
+  output: 'image.png',
+  copy: true,
+)
 
 dep_glfw = dependency('glfw3', required: true)
 

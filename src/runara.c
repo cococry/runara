@@ -1,19 +1,11 @@
 #include "../include/runara/runara.h"
 #include "src/backend.h"
+#include "src/internal.h"
 #include "src/log.h"
 #include <assert.h>
 #include <stdlib.h>
 
 #define RN_SUBSYS_NAME "CORE"
-
-struct rn_state_t {
-  struct rn_allocator_t allocator;
-  struct rn_log_t log;
-  bool owns_log_stream;
-
-  struct rn_backend_impl_t impl;
-  enum rn_backend_type_t backend_type;
-};
 
 static void *_default_alloc(size_t size, void *ctx);
 static void *_default_realloc(void *ptr, size_t size, void *ctx);
@@ -74,6 +66,29 @@ static const char *_backend_type_to_str(enum rn_backend_type_t type) {
   return "Unknown";
 }
 
+
+const char *rn_result_to_str(rn_result_t result) {
+  switch (result) {
+  case RN_OK:
+    return "Success";
+  case RN_ERROR_INVALID_ARGUMENT:
+    return "Invalid argument";
+  case RN_ERROR_OUT_OF_MEMORY:
+    return "Out of memory";
+  case RN_ERROR_BACKEND:
+    return "Rendering backend error";
+  case RN_ERROR_BAD_STATE:
+    return "Invalid renderer state";
+  case RN_ERROR_OVERFLOW:
+    return "Buffer or integer overflow";
+  case RN_ERROR_ATLAS_FULL:
+    return "Texture atlas is full";
+  default:
+    return "Unknown Runara error";
+  }
+}
+
+
 struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
   struct rn_init_options_t opts = {0};
 
@@ -101,25 +116,39 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
     return NULL;
   }
 
-  RN_TRACE(state->log, "State allocated");
-
   *state = (struct rn_state_t){0};
   state->allocator = allocator;
+  
+  RN_TRACE(state->log, "State allocated");
 
   _log_init(state, &opts.log);
   RN_TRACE(state->log, "Log initialized");
 
+  if (!rn_backend_implement(&state->backend, opts.render_backend,
+                            &state->allocator, &state->log,
+                            &opts.gl_load_proc)) {
+    rn_state_fini(state);
 
-  if (!rn_backend_implement(&state->impl, opts.render_backend,
-                            &state->allocator, &state->log, &opts.gl_load_proc)) {
     RN_FATAL(state->log, "Failed to implement rendering backend (Backend: %s)",
              _backend_type_to_str(opts.render_backend));
     return NULL;
   }
+  state->backend_init = true;
   state->backend_type = opts.render_backend;
 
   RN_TRACE(state->log, "Render backend initialized (Backend: %s)",
            _backend_type_to_str(opts.render_backend));
+
+  int renderer_res = rn_renderer_init(state);
+  if (renderer_res != RN_OK) {
+    rn_state_fini(state);
+
+    RN_FATAL(state->log, "Failed to initialize renderer: %s",
+             rn_result_to_str(renderer_res));
+
+    return NULL;
+  }
+  state->renderer_init = true;
 
   RN_INFO(state->log, "Runara initialized successfully");
 
@@ -134,12 +163,16 @@ void rn_state_fini(struct rn_state_t *state) {
 
   RN_TRACE(state->log, "destroying Runara state");
 
-  rn_backend_fini(&state->impl, state->backend_type, &state->allocator);
+  if (state->renderer_init) {
+    assert(state->backend_init);
+    rn_renderer_fini(state);
+  }
+
+  if (state->backend_init)
+    rn_backend_fini(&state->backend, state->backend_type, &state->allocator);
 
   if (state->owns_log_stream)
     fclose(state->log.stream);
 
   state->allocator.free(state, state->allocator.ctx);
 }
-
-void rn_canvas_set_size(const struct rn_box_u32_t *canvas) { assert(canvas); }
