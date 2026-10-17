@@ -1,104 +1,158 @@
 <img align="left" style="width:128px" src="https://github.com/cococry/runara/blob/master/branding/logo.png" width="128px">
 
-**Runara is a simple, well documented, bloatless 2D graphics library**
+**Runara is a simple, well documented, bloatless 2D texture library**
 
-Runara aims to be as small and as fast as possible. The code is contained
-in ~4k lines of code that feature a complete batch rendering system, 
-glyph loading with [freetype](http://freetype.org/), text shaping with [harfbuzz](https://harfbuzz.github.io/),
-custom text layouting & alignment a glyph caching system
-and much more. 
+Runara is a high level abstraction over both Vulkan and OpenGL that renders and manages 2D textures and rectangles. 
+It implements an instanced batch renderer that efficiently draws queued lists of textures and rectangles in an immediate-mode
+manner. One can upload texture data into Runara's managed texture atlas or to directly to a dedicated texture.  
 
 ---
 
 <br>
 
 ## Features
-- Efficient batch rendering system
-- Support for shader operations like rounded corners
-- Comple text rendering & loading engine
-- Extensivly documented functions & structures
-- Support for loading & rendering images
-- No global or hidden state
-- Built to make extending & modifing as straightforward as possible
-- Small and readable codebase
+- Vulkan 1.0 backend implementation  
+- OpenGL 3.3 backend implementation  
+- Efficient instanced & batched 2D renderer 
+- Merging of adjacent render batches
+- Optimized 3D texture atlas  
+- Ability to supply custom shaders 
 
 ## Example using GLFW
 
 ```c
-#include <GL/gl.h>
+
+#include <stdlib.h>
+
+#define GLFW_INCLUDE_NONE
+#include "runara/runara.h"
 #include <GLFW/glfw3.h>
-#include <runara/runara.h>
 
-RnState *state;
+struct rn_state_t *state = NULL;
 
-void resizecb(GLFWwindow* window, int w, int h) {
-  rn_resize_display(state, w, h);
+static void *_gl_load_proc(const char *name) {
+  union {
+    GLFWglproc function;
+    void *pointer;
+  } proc = {.function = glfwGetProcAddress(name)};
+  return proc.pointer;
 }
 
-int main() {
-  glfwInit();
+void resize_cb(GLFWwindow *window, int width, int height) {
+  (void)window;
+  struct rn_box_u32_t bounds = {.width = width, .height = height};
+  rn_canvas_set_bounds(state, &bounds);
+}
 
-  GLFWwindow* window = glfwCreateWindow(1280, 720, "Hello, World!", NULL, NULL);
+int main(void) {
+  if (!glfwInit())
+    return EXIT_FAILURE;
 
-  glfwSetFramebufferSizeCallback(window, resizecb);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
+  GLFWwindow *window = glfwCreateWindow(800, 600, "Runara rect", NULL, NULL);
+  if (!window) {
+    glfwTerminate();
+    return EXIT_FAILURE;
+  }
+
+  glfwSetFramebufferSizeCallback(window, resize_cb);
   glfwMakeContextCurrent(window);
 
-  // Initialize your state of the library
-  state = rn_init(1280, 720, (RnGLLoader)glfwGetProcAddress);
+  struct rn_init_options_t options = {
+      .render_backend = RN_RENDER_BACKEND_OPENGL,
+      .gl_load_proc = _gl_load_proc,
+  };
 
-  // Loading some fonts
-  RnFont *heading = rn_load_font(state, "./Lora-Italic.ttf", 36);
-  RnFont *paragraph = rn_load_font(state, "./Lora-Italic.ttf", 24);
+  state = rn_state_init(&options, 800, 600);
 
-  while(!glfwWindowShouldClose(window)) {
-    glClear(GL_COLOR_BUFFER_BIT);
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+  if (!state) {
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return EXIT_FAILURE;
+  }
 
-    // Beginning a rende pass with Runara
+  while (!glfwWindowShouldClose(window)) {
+    glfwPollEvents();
+
     rn_begin(state);
 
-    // Rendering some text with one font
-    rn_text_render(state, "Hello, runara!", heading, (vec2s){20, 20}, RN_WHITE);
+    rn_clear_color(state, (rn_color_t){0.2, 0.2, 0.2, 1.0}); 
 
-    // Render some text with another font
-    rn_text_render(state, "Hey There!\nThis is a paragraph.", paragraph, (vec2s){20, 70}, RN_WHITE);
+    rn_draw_rect(state, (struct rn_rect_t){50, 50, 100, 100},
+                 (rn_color_t){1, 0, 0, 1});
 
-    // Rendering a basic rectangle
-    rn_rect_render(state, (vec2s){20, 130}, (vec2s){200, 100}, RN_RED);
-
-    // Ending the render pass
     rn_end(state);
 
-    // External application or game code can still run perfectly fine
-    // here.
-
-    glfwPollEvents();
     glfwSwapBuffers(window);
   }
-  rn_free_font(state, heading);
-  rn_free_font(state, paragraph);
-  rn_terminate(state);
+
+  rn_state_fini(state);
+  glfwDestroyWindow(window);
+  glfwTerminate();
+  return EXIT_SUCCESS;
 }
 ```
 
 ## Building and installing
 
-Make sure you have those build dependencies installed 
-before installing Runara:
+Runara 2.0 uses **Meson** as its build system and supports both OpenGL and Vulkan rendering backends.
+
+Make sure you have the following build dependencies installed before building Runara:
 
 ### Dependencies
-```console
-freetype, harfbuzz, gl, make, gcc, cglm
+
+```text
+meson, ninja, gcc, pkg-config, cglm
 ```
 
-After installing the dependencies just run:
+Depending on the rendering backends you want, you will also need:
+
+- **OpenGL:** OpenGL development libraries
+- **Vulkan:** Vulkan development libraries and headers
+- **Examples:** GLFW3 development libraries
+
+### Building
+
+Clone the repository:
 
 ```console
-sudo make install
+git clone https://github.com/cococry/runara.git
+cd runara
 ```
 
-## Documentation
+Configure the build with both rendering backends and examples enabled:
 
-For documentation of the library, just take a look at the Runara [header file](https://github.com/cococry/runara/blob/master/include/runara/runara.h) where every function is well documented.
-This is in my opinion the best approach to documenting as it is straightly bound to actually deleloping with the library.
+```console
+meson setup build -Dbackends=all -Dexamples=true
+```
+
+Compile Runara:
+
+```console
+meson compile -C build
+```
+
+Alternatively, you can build only one rendering backend:
+
+```console
+meson setup build -Dbackends=opengl -Dexamples=true
+```
+
+Or:
+
+```console
+meson setup build -Dbackends=vulkan -Dexamples=false
+```
+
+### Installing
+
+After building Runara, install the library, headers and pkg-config file with:
+
+```console
+sudo meson install -C build
+```
+
+You can then link Runara in your own projects using `pkg-config`.
