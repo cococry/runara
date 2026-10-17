@@ -1,7 +1,7 @@
 project(
   'runara',
   'c',
-  version: '0.1.0',
+  version: '2.0.0',
   meson_version: '>= 1.2.0',
   default_options: [
     'c_std=c11',
@@ -13,20 +13,16 @@ project(
 
 cc = meson.get_compiler('c')
 
-dep_glfw3      = dependency('glfw3', required: true)
 dep_cglm       = dependency('cglm', required: true)
-dep_freetype   = dependency('freetype2', required: true)
-dep_harfbuzz   = dependency('harfbuzz', required: true)
 dep_m          = cc.find_library('m', required: true)
 dep_gl         = cc.find_library('GL', required: true)
 
 subdir('vendor/glad')
-subdir('vendor/stb_image')
 subdir('vendor/linesky')
 
 runara_inc = include_directories('include')
 runara_sources = [
-  'runara.c',
+  'src/runara.c',
   glad_c, 
 ]
 
@@ -49,10 +45,7 @@ runara_lib = static_library(
     stb_inc,
   ],
   dependencies: [
-    dep_glfw3,
     dep_cglm,
-    dep_freetype,
-    dep_harfbuzz,
     dep_gl,
     dep_m,
   ],
@@ -85,10 +78,7 @@ runara_dep = declare_dependency(
     stb_inc,
   ],
   dependencies: [
-    dep_glfw3,
     dep_cglm,
-    dep_freetype,
-    dep_harfbuzz,
     dep_gl,
     dep_m,
   ]
