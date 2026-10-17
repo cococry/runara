@@ -3,6 +3,9 @@
 
 
 #include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifndef LINESKY_STRIP_STRUCTURES
 typedef struct {
@@ -96,7 +99,7 @@ bool ls_atlas_push_rect(ls_atlas2d* atlas, float* posx, float* posy, ls_vec2d si
     atlas->_nskyline += (to_insert - to_remove);
   } else if(to_insert < to_remove) {
     uint16_t shift = to_remove - to_insert;
-    for (uint16_t i = i_first_after_rect; i + shift < atlas->_nskyline; i++) {
+    for (uint16_t i = i_first_after_rect; i < atlas->_nskyline; ++i) {
       atlas->skyline[i - shift] = atlas->skyline[i];
     }
     atlas->_nskyline -= shift;

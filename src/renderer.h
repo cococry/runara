@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runara/runara.h"
+#include "vendor/linesky/linesky.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -47,10 +48,8 @@ struct rn_renderer_t {
   bool frame_active;
   bool initialized;
 
-  uint32_t atlas_layer;
-  uint32_t atlas_x;
-  uint32_t atlas_y;
-  uint32_t atlas_row_height;
+  ls_atlas2d *atlas_layers;
+  ls_vec2d *atlas_scratch;
 };
 
 rn_result_t rn_renderer_init(struct rn_state_t *state);

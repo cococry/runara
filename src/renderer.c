@@ -1,6 +1,10 @@
 
+#define LINESKY_IMPLEMENTATION
+#include "vendor/linesky/linesky.h"
+
 #include "src/internal.h"
 #include "src/log.h"
+#include <stdlib.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -247,6 +251,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
        .type = RN_UNIFORM_VEC2,
        .stage = RN_SHADER_VERTEX},
   };
+
   /* Each sampler is assigned to its matching texture unit at creation. */
   struct rn_uniform_binding_t
       dedicated_uniforms[RN_RENDERER_MAX_TEXTURE_SLOTS + 1] = {0};
@@ -281,6 +286,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
       .uniform_binding_count =
           sizeof(atlas_uniforms) / sizeof(atlas_uniforms[0]),
   };
+
   const struct rn_pipeline_desc_t dedicated_desc = {
       .shader = RN_PIPELINE_UI_QUAD_DEDICATED,
       .blend = RN_BLEND_STRAIGHT_ALPHA,
@@ -319,6 +325,42 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
                                          &renderer->atlas_texture);
   if (result != RN_OK)
     goto failed;
+
+  /* linesky supports only up until uint16 dimensions */
+  if (RN_RENDERER_ATLAS_WIDTH > UINT16_MAX ||
+      RN_RENDERER_ATLAS_HEIGHT > UINT16_MAX)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  /* create linesky atlas layers */
+  renderer->atlas_layers = allocator->alloc(sizeof(*renderer->atlas_layers) *
+                                                RN_RENDERER_ATLAS_LAYERS,
+                                            allocator->ctx);
+  if (!renderer->atlas_layers) {
+    result = RN_ERROR_OUT_OF_MEMORY;
+    goto failed;
+  }
+
+  renderer->atlas_scratch = allocator->alloc(
+      sizeof(ls_vec2d) * RN_RENDERER_ATLAS_WIDTH, allocator->ctx);
+
+  if (!renderer->atlas_scratch) {
+    result = RN_ERROR_OUT_OF_MEMORY;
+    goto failed;
+  }
+
+  memset(renderer->atlas_layers, 0,
+         sizeof(*renderer->atlas_layers) * RN_RENDERER_ATLAS_LAYERS);
+
+  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer) {
+    ls_atlas_init(
+        &renderer->atlas_layers[layer],
+        (ls_vec2d){RN_RENDERER_ATLAS_WIDTH, RN_RENDERER_ATLAS_HEIGHT});
+
+    if (!renderer->atlas_layers[layer]._init) {
+      result = RN_ERROR_OUT_OF_MEMORY;
+      goto failed;
+    }
+  }
 
   renderer->initialized = true;
 
@@ -377,6 +419,15 @@ void rn_renderer_fini(struct rn_state_t *state) {
     if (renderer->batches)
       allocator->free(renderer->batches, allocator->ctx);
   }
+
+  if (renderer->atlas_layers) {
+    for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer)
+      free(renderer->atlas_layers[layer].skyline);
+
+    allocator->free(renderer->atlas_layers, allocator->ctx);
+  }
+  if (renderer->atlas_scratch)
+    allocator->free(renderer->atlas_scratch, allocator->ctx);
 
   memset(renderer, 0, sizeof(*renderer));
 
@@ -570,79 +621,101 @@ rn_result_t rn_atlas_upload(struct rn_state_t *state, uint32_t width,
   struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
-  if (!renderer->initialized)
+  if (!renderer->initialized || !renderer->atlas_layers ||
+      !renderer->atlas_scratch)
     return RN_ERROR_BAD_STATE;
 
-  if (width > RN_RENDERER_ATLAS_WIDTH - RN_RENDERER_ATLAS_PADDING ||
-      height > RN_RENDERER_ATLAS_HEIGHT - RN_RENDERER_ATLAS_PADDING)
+  /* Linesky uses uint16_t for its atlas and rectangle dimensions. */
+  if (RN_RENDERER_ATLAS_WIDTH > UINT16_MAX ||
+      RN_RENDERER_ATLAS_HEIGHT > UINT16_MAX)
+    return RN_ERROR_BAD_STATE;
+
+  if (width > RN_RENDERER_ATLAS_WIDTH || height > RN_RENDERER_ATLAS_HEIGHT ||
+      RN_RENDERER_ATLAS_PADDING > RN_RENDERER_ATLAS_WIDTH - width ||
+      RN_RENDERER_ATLAS_PADDING > RN_RENDERER_ATLAS_HEIGHT - height)
     return RN_ERROR_ATLAS_FULL;
 
-  /* Compute the next insertion point without changing atlas state yet. */
-  uint32_t layer = renderer->atlas_layer;
-  uint32_t position_x = renderer->atlas_x;
-  uint32_t position_y = renderer->atlas_y;
-  uint32_t row_height = renderer->atlas_row_height;
-
-  if (position_x + width + RN_RENDERER_ATLAS_PADDING >
-      RN_RENDERER_ATLAS_WIDTH) {
-    position_x = 0;
-    position_y += row_height + RN_RENDERER_ATLAS_PADDING;
-    row_height = 0;
-  }
-
-  if (position_y + height + RN_RENDERER_ATLAS_PADDING >
-      RN_RENDERER_ATLAS_HEIGHT) {
-    ++layer;
-    position_x = 0;
-    position_y = 0;
-    row_height = 0;
-  }
-
-  if (layer >= RN_RENDERER_ATLAS_LAYERS)
-    return RN_ERROR_ATLAS_FULL;
-
-  const struct rn_texture_array_write_t write = {
-      .texture = renderer->atlas_texture,
-      .x = position_x,
-      .y = position_y,
-      .layer = layer,
-      .width = width,
-      .height = height,
+  const ls_vec2d padded_size = {
+      .x = (uint16_t)(width + RN_RENDERER_ATLAS_PADDING),
+      .y = (uint16_t)(height + RN_RENDERER_ATLAS_PADDING),
   };
 
-  RN_RENDERER_CHECK(backend->write_texture_array_layer(backend->ctx, &write,
-                                                       rgba, byte_count));
+  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer) {
+    ls_atlas2d *atlas = &renderer->atlas_layers[layer];
 
-  if (layer != renderer->atlas_layer)
-    RN_TRACE(state->log, "atlas allocation advanced to layer %u",
-             (unsigned)layer);
+    if (!atlas->_init)
+      continue;
 
-  RN_TRACE(state->log,
-           "uploaded %ux%u RGBA8 image to atlas layer %u at (%u, %u)",
-           (unsigned)width, (unsigned)height, (unsigned)layer,
-           (unsigned)position_x, (unsigned)position_y);
+    /*
+     * Copy the current skyline into reusable scratch memory.
+     * Only active nodes need to be copied.
+     */
+    memcpy(renderer->atlas_scratch, atlas->skyline,
+           sizeof(ls_vec2d) * atlas->_nskyline);
 
-  renderer->atlas_layer = layer;
-  renderer->atlas_x = position_x + width + RN_RENDERER_ATLAS_PADDING;
-  renderer->atlas_y = position_y;
-  renderer->atlas_row_height = row_height > height ? row_height : height;
+    ls_atlas2d candidate = *atlas;
+    candidate.skyline = renderer->atlas_scratch;
 
-  *image = (struct rn_image_t){
-      .storage = RN_IMAGE_ATLAS,
-      .texture = renderer->atlas_texture,
-      .width = width,
-      .height = height,
-      .layer = layer,
-      .uv =
-          {
-              (float)position_x / RN_RENDERER_ATLAS_WIDTH,
-              (float)position_y / RN_RENDERER_ATLAS_HEIGHT,
-              (float)(position_x + width) / RN_RENDERER_ATLAS_WIDTH,
-              (float)(position_y + height) / RN_RENDERER_ATLAS_HEIGHT,
-          },
-  };
+    float position_x = 0.0f;
+    float position_y = 0.0f;
 
-  return RN_OK;
+    if (!ls_atlas_push_rect(&candidate, &position_x, &position_y, padded_size))
+      continue;
+
+    const uint32_t atlas_x = (uint32_t)position_x;
+    const uint32_t atlas_y = (uint32_t)position_y;
+
+    const struct rn_texture_array_write_t write = {
+        .texture = renderer->atlas_texture,
+        .x = atlas_x,
+        .y = atlas_y,
+        .layer = layer,
+        .width = width,
+        .height = height,
+    };
+
+    rn_result_t result = backend->write_texture_array_layer(
+        backend->ctx, &write, rgba, byte_count);
+
+    if (result != RN_OK)
+      return result;
+
+    /*
+     * The GPU upload succeeded. Commit the candidate skyline
+     * to the real atlas.
+     */
+    memcpy(atlas->skyline, renderer->atlas_scratch,
+           sizeof(ls_vec2d) * candidate._nskyline);
+
+    atlas->_nskyline = candidate._nskyline;
+
+    *image = (struct rn_image_t){
+        .storage = RN_IMAGE_ATLAS,
+        .texture = renderer->atlas_texture,
+        .width = width,
+        .height = height,
+        .layer = layer,
+        .uv =
+            {
+                (float)atlas_x / RN_RENDERER_ATLAS_WIDTH,
+                (float)atlas_y / RN_RENDERER_ATLAS_HEIGHT,
+                (float)(atlas_x + width) / RN_RENDERER_ATLAS_WIDTH,
+                (float)(atlas_y + height) / RN_RENDERER_ATLAS_HEIGHT,
+            },
+    };
+
+    RN_TRACE(state->log,
+             "uploaded %ux%u RGBA8 image to atlas layer %u at (%u, %u)",
+             (unsigned)width, (unsigned)height, (unsigned)layer,
+             (unsigned)atlas_x, (unsigned)atlas_y);
+
+    return RN_OK;
+  }
+
+  RN_TRACE(state->log, "texture atlas is full (%ux%u image)", (unsigned)width,
+           (unsigned)height);
+
+  return RN_ERROR_ATLAS_FULL;
 }
 
 void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
