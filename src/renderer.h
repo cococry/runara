@@ -50,7 +50,7 @@ struct rn_renderer_t {
   uint32_t atlas_y;
   uint32_t atlas_row_height;
 
-  struct rn_box_u32_t canvas; 
+  struct rn_box_u32_t canvas;
 };
 
 rn_result_t rn_renderer_init(struct rn_state_t *state);

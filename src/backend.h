@@ -127,42 +127,39 @@ struct rn_backend_impl_t {
   rn_result_t (*end_frame)(void *ctx);
 
   /* Buffers */
-  rn_result_t (*create_buffer)(void *ctx,
-                                       const struct rn_buffer_desc_t *desc,
-                                       rn_buffer_handle_t *out);
+  rn_result_t (*create_buffer)(void *ctx, const struct rn_buffer_desc_t *desc,
+                               rn_buffer_handle_t *out);
 
   void (*destroy_buffer)(void *ctx, rn_buffer_handle_t buffer);
 
   rn_result_t (*write_buffer)(void *ctx, rn_buffer_handle_t buffer,
-                                      uint32_t binding, size_t offset,
-                                      const void *data, size_t size);
+                              uint32_t binding, size_t offset, const void *data,
+                              size_t size);
 
   /* Pipelines */
   rn_result_t (*create_pipeline)(void *ctx,
-                                         const struct rn_pipeline_desc_t *desc,
-                                         rn_pipeline_handle_t *out);
+                                 const struct rn_pipeline_desc_t *desc,
+                                 rn_pipeline_handle_t *out);
 
   void (*destroy_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
 
   rn_result_t (*set_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
 
   rn_result_t (*set_vertex_buffer)(void *ctx, rn_buffer_handle_t buffer,
-                                           uint32_t binding);
+                                   uint32_t binding);
 
   rn_result_t (*set_index_buffer)(void *ctx, rn_buffer_handle_t buffer);
 
-  rn_result_t (*set_uniform_2f)(void *ctx,
-                                        rn_pipeline_handle_t pipeline,
-                                        const char *name, float x, float y);
+  rn_result_t (*set_uniform_2f)(void *ctx, rn_pipeline_handle_t pipeline,
+                                const char *name, float x, float y);
 
   rn_result_t (*draw_indexed_instanced)(
       void *ctx, const struct rn_draw_indexed_instanced_t *draw);
 
   /* Textures */
-  rn_result_t (*create_texture)(void *ctx,
-                                        const struct rn_texture_desc_t *desc,
-                                        const void *rgba_pixels, size_t size,
-                                        rn_texture_handle_t *out);
+  rn_result_t (*create_texture)(void *ctx, const struct rn_texture_desc_t *desc,
+                                const void *rgba_pixels, size_t size,
+                                rn_texture_handle_t *out);
 
   rn_result_t (*create_texture_array)(
       void *ctx, const struct rn_texture_array_desc_t *desc,
@@ -175,7 +172,7 @@ struct rn_backend_impl_t {
   void (*destroy_texture)(void *ctx, rn_texture_handle_t texture);
 
   rn_result_t (*set_texture)(void *ctx, uint32_t slot,
-                                     rn_texture_handle_t texture);
+                             rn_texture_handle_t texture);
 };
 
 bool rn_backend_implement(struct rn_backend_impl_t *impl,

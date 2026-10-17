@@ -71,8 +71,7 @@ void rn_log_emit(const struct rn_log_t *log, enum rn_log_level_t level,
   FILE *terminal = level >= RN_LL_ERR ? stderr : stdout;
   FILE *logfile = NULL;
 
-  if (log && log->stream &&
-      log->stream != stdout && log->stream != stderr)
+  if (log && log->stream && log->stream != stdout && log->stream != stderr)
     logfile = log->stream;
 
   va_list args;

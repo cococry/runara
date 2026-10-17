@@ -1,9 +1,12 @@
 
 #include "src/internal.h"
+#include "src/log.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#define RN_SUBSYS_NAME "RENDERER"
 
 #define RN_RENDERER_CHECK(result)                                              \
   do {                                                                         \
@@ -108,9 +111,9 @@ static rn_result_t _configure_draw(struct rn_state_t *state,
   RN_RENDERER_CHECK(
       backend->set_index_buffer(backend->ctx, renderer->index_buffer));
 
-  RN_RENDERER_CHECK(
-      backend->set_uniform_2f(backend->ctx, pipeline, "u_screen_size",
-                              (float)renderer->canvas.width, (float)renderer->canvas.height));
+  RN_RENDERER_CHECK(backend->set_uniform_2f(
+      backend->ctx, pipeline, "u_screen_size", (float)renderer->canvas.width,
+      (float)renderer->canvas.height));
 
   return RN_OK;
 }
@@ -137,6 +140,9 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
       !backend->create_texture_array || !allocator->alloc || !allocator->free)
     return RN_ERROR_BAD_STATE;
 
+  RN_TRACE(state->log, "initializing 2D renderer (max instances=%u)",
+           (unsigned)RN_RENDERER_MAX_INSTANCES);
+
   memset(renderer, 0, sizeof(*renderer));
   renderer->vertex_buffer = RN_INVALID_HANDLE;
   renderer->index_buffer = RN_INVALID_HANDLE;
@@ -152,6 +158,8 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
 
   if (!renderer->instances || !renderer->batches)
     goto allocation_failed;
+
+  RN_TRACE(state->log, "allocated instance and draw batch storage");
 
   const struct rn_buffer_desc_t vertex_desc = {.target = RN_BUFFER_VERTEX,
                                                .usage = RN_BUFFER_STATIC,
@@ -181,6 +189,11 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
                                   &renderer->instance_buffer);
   if (result != RN_OK)
     goto failed;
+
+  RN_TRACE(state->log,
+           "created shared quad buffers (vertex=%u, index=%u, instances=%u)",
+           (unsigned)renderer->vertex_buffer, (unsigned)renderer->index_buffer,
+           (unsigned)renderer->instance_buffer);
 
   const struct rn_uniform_binding_t atlas_uniforms[] = {
       {.name = "u_texture_array",
@@ -232,6 +245,12 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   if (result != RN_OK)
     goto failed;
 
+  RN_TRACE(
+      state->log,
+      "created atlas and dedicated-texture pipelines (atlas=%u, dedicated=%u)",
+      (unsigned)renderer->atlas_pipeline,
+      (unsigned)renderer->dedicated_pipeline);
+
   const struct rn_texture_array_desc_t texture_desc = {
       .width = RN_RENDERER_ATLAS_WIDTH,
       .height = RN_RENDERER_ATLAS_HEIGHT,
@@ -245,11 +264,25 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
     goto failed;
 
   renderer->initialized = true;
+
+  RN_TRACE(state->log, "created RGBA8 atlas texture %u (%ux%u, %u layers)",
+           (unsigned)renderer->atlas_texture, (unsigned)RN_RENDERER_ATLAS_WIDTH,
+           (unsigned)RN_RENDERER_ATLAS_HEIGHT,
+           (unsigned)RN_RENDERER_ATLAS_LAYERS);
+  RN_TRACE(state->log,
+           "2D renderer ready: solid rectangles and atlas images use the atlas "
+           "pipeline; "
+           "dedicated textures use the dedicated pipeline; adjacent compatible "
+           "quads are batched in submission order");
+
   return RN_OK;
 
 allocation_failed:
   result = RN_ERROR_OUT_OF_MEMORY;
 failed:
+  RN_TRACE(state->log,
+           "renderer initialization failed (result=%d); cleaning up",
+           (int)result);
   rn_renderer_fini(state);
   return result;
 }
@@ -261,6 +294,9 @@ void rn_renderer_fini(struct rn_state_t *state) {
   struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
   struct rn_allocator_t *allocator = &state->allocator;
+
+  if (renderer->initialized || renderer->instances || renderer->batches)
+    RN_TRACE(state->log, "tearing down 2D renderer and owned GPU resources");
 
   if (backend->destroy_texture && renderer->atlas_texture != RN_INVALID_HANDLE)
     backend->destroy_texture(backend->ctx, renderer->atlas_texture);
@@ -289,10 +325,12 @@ void rn_renderer_fini(struct rn_state_t *state) {
   }
 
   memset(renderer, 0, sizeof(*renderer));
+
+  RN_TRACE(state->log, "2D renderer teardown complete");
 }
 
 rn_result_t rn_begin(struct rn_state_t *state) {
-  if (!state) 
+  if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
   struct rn_renderer_t *renderer = &state->renderer;
@@ -436,6 +474,10 @@ rn_result_t rn_texture_upload(struct rn_state_t *state, uint32_t width,
   RN_RENDERER_CHECK(
       backend->create_texture(backend->ctx, &desc, rgba, byte_count, &texture));
 
+  RN_TRACE(state->log, "uploaded dedicated texture %u (%ux%u, %zu bytes)",
+           (unsigned)texture, (unsigned)width, (unsigned)height,
+           (size_t)width * height * 4u);
+
   *image = (struct rn_image_t){
       .storage = RN_IMAGE_DEDICATED,
       .texture = texture,
@@ -499,6 +541,15 @@ rn_result_t rn_atlas_upload(struct rn_state_t *state, uint32_t width,
   RN_RENDERER_CHECK(backend->write_texture_array_layer(backend->ctx, &write,
                                                        rgba, byte_count));
 
+  if (layer != renderer->atlas_layer)
+    RN_TRACE(state->log, "atlas allocation advanced to layer %u",
+             (unsigned)layer);
+
+  RN_TRACE(state->log,
+           "uploaded %ux%u image to atlas layer %u at (%u, %u)",
+           (unsigned)width, (unsigned)height, (unsigned)layer,
+           (unsigned)position_x, (unsigned)position_y);
+
   renderer->atlas_layer = layer;
   renderer->atlas_x = position_x + width + RN_RENDERER_ATLAS_PADDING;
   renderer->atlas_y = position_y;
@@ -527,14 +578,18 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
     return;
 
   if (image->storage == RN_IMAGE_DEDICATED &&
-      image->texture != RN_INVALID_HANDLE && state->backend.destroy_texture)
+      image->texture != RN_INVALID_HANDLE && state->backend.destroy_texture) {
+    RN_TRACE(state->log, "releasing dedicated texture %u",
+             (unsigned)image->texture);
     state->backend.destroy_texture(state->backend.ctx, image->texture);
+  }
 
   /* Atlas allocations are retained until the whole renderer is destroyed. */
   image->texture = RN_INVALID_HANDLE;
 }
 
-void rn_canvas_set_bounds(struct rn_state_t* state, const struct rn_box_u32_t *canvas) {
+void rn_canvas_set_bounds(struct rn_state_t *state,
+                          const struct rn_box_u32_t *canvas) {
   if (!state || !canvas)
     return;
   struct rn_renderer_t *renderer = &state->renderer;

@@ -66,7 +66,6 @@ static const char *_backend_type_to_str(enum rn_backend_type_t type) {
   return "Unknown";
 }
 
-
 const char *rn_result_to_str(rn_result_t result) {
   switch (result) {
   case RN_OK:
@@ -87,7 +86,6 @@ const char *rn_result_to_str(rn_result_t result) {
     return "Unknown Runara error";
   }
 }
-
 
 struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
   struct rn_init_options_t opts = {0};
@@ -118,7 +116,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
 
   *state = (struct rn_state_t){0};
   state->allocator = allocator;
-  
+
   RN_TRACE(state->log, "State allocated");
 
   _log_init(state, &opts.log);
