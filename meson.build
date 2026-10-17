@@ -13,78 +13,129 @@ project(
 
 cc = meson.get_compiler('c')
 
-dep_cglm       = dependency('cglm', required: true)
-dep_m          = cc.find_library('m', required: true)
-dep_gl         = cc.find_library('GL', required: true)
 
-subdir('vendor/glad')
-subdir('vendor/linesky')
+dep_cglm = dependency('cglm', required: true)
+dep_m = cc.find_library('m', required: true)
 
-runara_inc = include_directories('include')
+backend_option = get_option('backends')
+
+build_opengl = backend_option == 'opengl' or backend_option == 'both'
+build_vulkan = backend_option == 'vulkan' or backend_option == 'both'
+
 runara_sources = [
   'src/runara.c',
   'src/log.c',
-  glad_c, 
+  'src/backend.c',
+]
+
+runara_inc = include_directories('include')
+
+runara_includes = [
+  runara_inc,
+]
+
+runara_deps = [
+  dep_cglm,
+  dep_m,
 ]
 
 runara_cflags = [
   '-march=native',
   '-ffast-math',
-  '-Wno-stringop-overflow',
-  '-Wno-missing-braces',
-  '-Wno-int-conversion',
-  '-Wno-unused-variable',
-  '-Wno-unused-but-set-variable',
 ]
+
+if build_opengl
+  dep_gl = dependency('gl', required: true)
+
+  subdir('vendor/glad')
+
+  runara_sources += [
+    'src/opengl/backend.c',
+    glad_c,
+  ]
+
+  runara_includes += [
+    glad_inc,
+  ]
+
+  runara_deps += [
+    dep_gl,
+  ]
+
+  runara_cflags += [
+    '-DRN_HAS_OPENGL=1',
+  ]
+endif
+
+if build_vulkan
+  dep_vulkan = dependency('vulkan', required: true)
+
+  runara_sources += [
+    'src/vulkan/backend.c',
+  ]
+
+  runara_deps += [
+    dep_vulkan,
+  ]
+
+  runara_cflags += [
+    '-DRN_HAS_VULKAN=1',
+  ]
+endif
 
 runara_lib = static_library(
   'runara',
   sources: runara_sources,
-  include_directories: [
-    runara_inc,
-    glad_inc,
-    stb_inc,
-  ],
-  dependencies: [
-    dep_cglm,
-    dep_gl,
-    dep_m,
-  ],
+  include_directories: runara_includes,
+  dependencies: runara_deps,
   c_args: runara_cflags,
-  install: true
-)
-
-install_subdir('include/runara', install_dir: get_option('includedir') / 'runara')
-
-runara_pc = import('pkgconfig')
-runara_pc.generate(
-  name: 'runara',
-  filebase: 'runara',
-  description: 'Runara rendering library (GL abstraction for Vortex compositor)',
-  version: meson.project_version(),
-  libraries: runara_lib,
-  subdirs: 'runara',
-  requires: ['glfw3', 'cglm', 'freetype2', 'harfbuzz'],
-)
-
-run_target('build-runara',
-  command: ['meson', 'compile', '-C', meson.current_build_dir()]
+  install: true,
 )
 
 runara_dep = declare_dependency(
   link_with: runara_lib,
-  include_directories: [
-    runara_inc,
-    glad_inc,
-    stb_inc,
-  ],
-  dependencies: [
-    dep_cglm,
-    dep_gl,
-    dep_m,
-  ]
+  include_directories: runara_includes,
+  dependencies: runara_deps,
+)
+
+install_subdir(
+  'include/runara',
+  install_dir: get_option('includedir'),
+)
+
+runara_pc = import('pkgconfig')
+
+runara_pc.generate(
+  name: 'runara',
+  filebase: 'runara',
+  description: 'Runara backend-independent 2D rendering library',
+  version: meson.project_version(),
+  libraries: runara_lib,
+  subdirs: 'runara',
+  requires: ['cglm'],
 )
 
 if get_option('examples')
   subdir('examples')
 endif
+
+run_target(
+  'build-runara',
+  command: [
+    'meson',
+    'compile',
+    '-C',
+    meson.current_build_dir(),
+  ],
+)
+
+summary(
+  {
+    'OpenGL backend': build_opengl,
+    'Vulkan backend': build_vulkan,
+    'Examples': get_option('examples'),
+  },
+  section: 'Runara configuration',
+  bool_yn: true,
+)
+

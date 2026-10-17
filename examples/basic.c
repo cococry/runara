@@ -26,8 +26,7 @@ int main(void) {
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
 
-  struct rn_init_options_t opts = {.log = {.verbose = true,
-  .logfile = true}};
+  struct rn_init_options_t opts = {.log = {.verbose = true, .logfile = true}, .render_backend = RN_RENDER_BACKEND_VULKAN};
   struct rn_state_t *state = rn_state_init(&opts);
 
   if (!state) {

@@ -4,8 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct rn_color_t {
+    float r, g, b, a;
+} rn_color_t;
+
 struct rn_box_u32_t {
   uint32_t x, y, width, height;
+};
+
+struct rn_box_f32_t {
+  float x, y, width, height;
 };
 
 struct rn_state_t;
@@ -25,9 +33,16 @@ struct rn_log_options_t {
   bool logfile;
 };
 
+enum rn_backend_type_t {
+  RN_RENDER_BACKEND_OPENGL = 0,
+  RN_RENDER_BACKEND_VULKAN 
+};
+
 struct rn_init_options_t {
   struct rn_allocator_t allocator;
   struct rn_log_options_t log;
+  
+  enum rn_backend_type_t render_backend;
 };
 
 struct rn_state_t;

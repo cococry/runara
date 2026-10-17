@@ -4,3 +4,11 @@ option(
   value: false,
   description: 'Build Runara examples'
 )
+
+option(
+  'backends',
+  type: 'combo',
+  choices: ['opengl', 'vulkan', 'all'],
+  value: 'opengl',
+  description: 'GPU backends to compile'
+)
