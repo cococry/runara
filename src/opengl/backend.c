@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "src/internal.h"
+
 #define RN_GL_MAX_BINDINGS 8
 
 #define RN_SUBSYS_NAME "OPENGL"
@@ -37,6 +39,7 @@ struct rn_gl_texture {
   GLenum target;
   uint32_t width, height, layers;
   bool alive;
+  bool borrowed;
 };
 
 struct rn_gl_pipeline {
@@ -932,9 +935,18 @@ static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
     glDeleteTextures(1, &gl_id);
     return RN_ERROR_BACKEND;
   }
+
   *out_handle = (rn_texture_handle_t)ctx->texture_count;
-  ctx->textures[ctx->texture_count++] =
-      (struct rn_gl_texture){gl_id, target, width, height, layers, true};
+
+  ctx->textures[ctx->texture_count++] = (struct rn_gl_texture){
+      .gl_id = gl_id,
+      .target = target,
+      .width = width,
+      .height = height,
+      .layers = layers,
+      .alive = true,
+      .borrowed = false,
+  };
 
   _RN_GL_LOG_TRACE(ctx->log, "created texture %u (GL=%u, %ux%u, layers=%u)",
                    (unsigned int)*out_handle, (unsigned int)gl_id, width,
@@ -1018,7 +1030,9 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
   _RN_GL_LOG_TRACE(ctx->log, "destroying texture %u (GL=%u)",
                    (unsigned int)handle, (unsigned int)gpu_texture->gl_id);
 
-  glDeleteTextures(1, &gpu_texture->gl_id);
+  if (!gpu_texture->borrowed)
+    glDeleteTextures(1, &gpu_texture->gl_id);
+
   gpu_texture->alive = false;
 }
 
@@ -1043,7 +1057,8 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 
 bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log, const void *backend_info) {
+                             const struct rn_log_t *log,
+                             const void *backend_info) {
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 
@@ -1139,7 +1154,8 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
 
   for (size_t resource_index = 0; resource_index < ctx->texture_count;
        ++resource_index)
-    if (ctx->textures[resource_index].alive)
+    if (ctx->textures[resource_index].alive &&
+        !ctx->textures[resource_index].borrowed)
       glDeleteTextures(1, &ctx->textures[resource_index].gl_id);
 
   for (size_t resource_index = 0; resource_index < ctx->pipeline_count;
@@ -1169,4 +1185,84 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
   ctx->alloc->free(ctx, ctx->alloc->ctx);
 
   memset(backend, 0, sizeof(*backend));
+}
+
+rn_result_t rn_image_from_gl_texture(struct rn_state_t *state, uint32_t texture,
+                                     uint32_t width, uint32_t height,
+                                     struct rn_image_t *out_image) {
+  if (!state || !out_image || !texture || !width || !height ||
+      width > INT_MAX || height > INT_MAX)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  /* make sure this state uses the gl backend. */
+  if (state->backend.create_texture != _create_texture)
+    return RN_ERROR_BACKEND;
+
+  struct rn_gl_context *ctx = state->backend.ctx;
+
+  if (!ctx)
+    return RN_ERROR_BAD_STATE;
+
+  /* the texture must already exist in the current gl context
+   * (or a gl context sharing its objects) */
+  if (glIsTexture((GLuint)texture) != GL_TRUE)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  /* confirm the info */
+  GLint prev_tex = 0;
+  GLint actual_width = 0;
+  GLint actual_height = 0;
+
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+  /* the borrowed texture must be a GL_TEXTURE_2D for this to work btw. but we
+   * have no way of getting the actual target of the texture */
+  glBindTexture(GL_TEXTURE_2D, (GLuint)texture);
+
+  glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &actual_width);
+  glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &actual_height);
+
+  glBindTexture(GL_TEXTURE_2D, (GLuint)prev_tex);
+
+  if (_gl_check(ctx->log, __func__) != RN_OK)
+    return RN_ERROR_BACKEND;
+
+  /* confirm the info */
+  if (actual_width != (GLint)width || actual_height != (GLint)height)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  /* allocate one slot in the texture resource table (no gpu texture
+   * allocation)*/
+  rn_result_t result = _ensure_textures(ctx);
+
+  if (result != RN_OK)
+    return result;
+
+  rn_texture_handle_t handle = (rn_texture_handle_t)ctx->texture_count;
+
+  ctx->textures[ctx->texture_count++] = (struct rn_gl_texture){
+      .gl_id = (GLuint)texture,
+      .target = GL_TEXTURE_2D,
+      .width = width,
+      .height = height,
+      .layers = 1,
+      .alive = true,
+      .borrowed = true,
+  };
+
+  *out_image = (struct rn_image_t){
+      .storage = RN_IMAGE_DEDICATED,
+      .texture = handle,
+      .width = width,
+      .height = height,
+      .layer = 0,
+      .uv = {0.0f, 0.0f, 1.0f, 1.0f},
+  };
+
+  _RN_GL_LOG_TRACE(ctx->log,
+                   "registered borrowed OpenGL texture %u "
+                   "(GL=%u, %ux%u)",
+                   (unsigned int)handle, (unsigned int)texture,
+                   (unsigned int)width, (unsigned int)height);
+
+  return RN_OK;
 }

@@ -766,7 +766,7 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
     ctx->swap_format = chosen.format;
   }
 
-  /* done choosing formats */ 
+  /* done choosing formats */
   ctx->alloc->free(formats, ctx->alloc->ctx);
 
   VkExtent2D extent = capabilities.currentExtent;
@@ -834,7 +834,8 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
       .clipped = VK_TRUE,
   };
 
-  /* Called only after vkDeviceWaitIdle, which is called before, by the caller */ 
+  /* Called only after vkDeviceWaitIdle, which is called before, by the caller
+   */
   _destroy_swapchain(ctx);
 
   /* create new swapchain */
@@ -901,7 +902,7 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
         .height = extent.height,
         .layers = 1,
     };
-    
+
     /* create framebuffer */
     status = vkCreateFramebuffer(ctx->device, &framebuffer_info, NULL,
                                  &target->framebuffer);
@@ -967,7 +968,7 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-  /* create image available semaphore */
+    /* create image available semaphore */
     result = _result(ctx,
                      vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
                                        &ctx->image_available),
@@ -2182,6 +2183,7 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
     _VK_ERROR(ctx->log, "cannot destroy a texture during a frame");
     return;
   }
+
   if (!ctx->tearing_down)
     vkDeviceWaitIdle(ctx->device);
   vkDestroySampler(ctx->device, texture->sampler, NULL);
@@ -2194,7 +2196,8 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
 
 bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log, const void *backend_info) {
+                             const struct rn_log_t *log,
+                             const void *backend_info) {
   const struct rn_vk_init_options_t *options = backend_info;
 
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free ||
@@ -2498,7 +2501,7 @@ rn_vk_target_register(struct rn_state_t *state,
       .layers = 1,
   };
 
-  /* create framebuffer for the target */ 
+  /* create framebuffer for the target */
   status =
       vkCreateFramebuffer(ctx->device, &fb_info, NULL, &target.framebuffer);
 
@@ -2525,7 +2528,7 @@ rn_result_t rn_vk_target_set(struct rn_state_t *state,
       !_external_target(ctx, handle))
     return RN_ERROR_INVALID_ARGUMENT;
 
-  /* set active target */ 
+  /* set active target */
   ctx->active_target = handle;
   return RN_OK;
 }
@@ -2572,10 +2575,10 @@ rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
   return RN_OK;
 }
 
-rn_result_t rn_vk_image_from_image(struct rn_state_t *state, VkImage image,
-                                     VkFormat format, uint32_t width,
-                                     uint32_t height,
-                                     struct rn_image_t *out_image) {
+rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
+                                   VkFormat format, uint32_t width,
+                                   uint32_t height,
+                                   struct rn_image_t *out_image) {
   struct rn_vk_context *ctx = _state_context(state);
 
   if (!ctx || !out_image || !image || !width || !height || ctx->frame_active)

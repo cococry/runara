@@ -158,8 +158,8 @@ int main(int argc, char **argv) {
   const size_t pixel_bytes = (size_t)pixel_width * (size_t)pixel_height * 4u;
 
   rn_result_t result =
-      rn_texture_upload(state, (uint32_t)pixel_width, (uint32_t)pixel_height,
-                        pixels, pixel_bytes, &image);
+      rn_image_dedicated(state, (uint32_t)pixel_width, (uint32_t)pixel_height,
+                         pixels, pixel_bytes, &image);
 
   stbi_image_free(pixels);
 

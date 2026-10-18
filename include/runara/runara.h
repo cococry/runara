@@ -121,17 +121,20 @@ typedef enum rn_result_t {
 const char *rn_result_to_str(rn_result_t result);
 
 /* Upload a dedicated texture to the renderer. Runara returns the created
- * rn_image_t image.*/
-rn_result_t rn_texture_upload(struct rn_state_t *state, uint32_t width,
+ * rn_image_t image. The image wrapper and the underlying GPU texture are owned
+ * by the renderer. rn_texture_release() deallocates the underlying GPU texture.
+ */
+rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
                               uint32_t height, const void *rgba,
                               size_t byte_count, struct rn_image_t *image);
 
-/* Upload an atlas txture to the renderer. Runara returns the created rn_image_t
- * image.*/
-rn_result_t rn_atlas_upload(struct rn_state_t *state, uint32_t width,
+/* Upload texture data to the renderer-managed texture atlas. Use this for
+ * texture data you need packed, e.g. glyphs. Runara returns the created
+ * rn_image_t image. The returned image is a subsection of the renderer-managed
+ * 3D atlas texture with ready UVs. */
+rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
                             uint32_t height, const void *rgba,
                             size_t byte_count, struct rn_image_t *image);
-
 /* Destroy a texture. */
 void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image);
 

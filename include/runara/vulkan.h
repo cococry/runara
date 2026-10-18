@@ -113,7 +113,7 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state);
  * required acquire synchronization before drawing it.
  * rn_texture_release() releases the Runara wrapper, not the borrowed image.
  */
-rn_result_t rn_vk_image_from_image(
+rn_result_t rn_image_from_vk_image(
     struct rn_state_t *state,
     VkImage image,
     VkFormat format,

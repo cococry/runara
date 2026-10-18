@@ -576,9 +576,9 @@ finish: {
   return result == RN_OK ? end_result : result;
 }
 }
-rn_result_t rn_texture_upload(struct rn_state_t *state, uint32_t width,
-                              uint32_t height, const void *rgba,
-                              size_t byte_count, struct rn_image_t *image) {
+rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
+                               uint32_t height, const void *rgba,
+                               size_t byte_count, struct rn_image_t *image) {
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -612,9 +612,9 @@ rn_result_t rn_texture_upload(struct rn_state_t *state, uint32_t width,
   return RN_OK;
 }
 
-rn_result_t rn_atlas_upload(struct rn_state_t *state, uint32_t width,
-                            uint32_t height, const void *rgba,
-                            size_t byte_count, struct rn_image_t *image) {
+rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
+                           uint32_t height, const void *rgba, size_t byte_count,
+                           struct rn_image_t *image) {
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
 
