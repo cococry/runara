@@ -1,5 +1,6 @@
 example_sources = [
   'image-gl',
+  'multi-image-gl',
   'image-vk',
   'image-gl-x11',
   'image-vk-x11',
@@ -10,6 +11,12 @@ example_sources = [
 configure_file(
   input: 'image.png',
   output: 'image.png',
+  copy: true,
+)
+
+configure_file(
+  input: 'image2.jpg',
+  output: 'image2.jpg',
   copy: true,
 )
 

@@ -50,7 +50,6 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-
   window =
       glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Runara image", NULL, NULL);
 
@@ -95,7 +94,7 @@ int main(int argc, char **argv) {
 
   rn_result_t result =
       rn_image_dedicated(state, (uint32_t)pixel_width, (uint32_t)pixel_height,
-                        pixels, pixel_bytes, &image);
+                         pixels, pixel_bytes, &image);
 
   stbi_image_free(pixels);
 
