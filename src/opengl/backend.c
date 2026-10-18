@@ -1043,7 +1043,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 
 bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log, void *backend_info) {
+                             const struct rn_log_t *log, const void *backend_info) {
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 

@@ -89,24 +89,21 @@ const char *rn_result_to_str(rn_result_t result) {
 
 struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
                                  uint32_t init_width, uint32_t init_height) {
-  struct rn_init_options_t opts = {0};
-
-  if (options)
-    opts = *options;
-
-  struct rn_allocator_t allocator = opts.allocator;
-
-  if (!allocator.alloc && !allocator.free) {
-    allocator.alloc = _default_alloc;
-    allocator.free = _default_free;
-    allocator.realloc = _default_realloc;
-  } else if (!allocator.alloc || !allocator.free) {
-    RN_ERROR_HEADLESS("allocator requires both alloc and free callbacks");
+  if (!options) {
+    RN_ERROR_HEADLESS("NULL rn_init_options_t supplied, cannot initialize");
     return NULL;
   }
 
-  if (!allocator.realloc)
+  struct rn_allocator_t allocator = options->allocator;
+
+  if (!allocator.alloc && !allocator.realloc && !allocator.free) {
+    allocator.alloc = _default_alloc;
     allocator.realloc = _default_realloc;
+    allocator.free = _default_free;
+  } else if (!allocator.alloc || !allocator.realloc || !allocator.free) {
+    RN_ERROR_HEADLESS("custom allocator requires alloc, realloc and free");
+    return NULL;
+  }
 
   struct rn_state_t *state = allocator.alloc(sizeof(*state), allocator.ctx);
 
@@ -120,33 +117,35 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
 
   RN_TRACE(state->log, "State allocated");
 
-  _log_init(state, &opts.log);
+  _log_init(state, &options->log);
   RN_TRACE(state->log, "Log initialized");
 
-  if (!rn_backend_implement(&state->backend, opts.render_backend,
+  if (!rn_backend_implement(&state->backend, options->render_backend,
                             &state->allocator, &state->log,
-                            &opts.gl_load_proc)) {
+                            options->render_backend == RN_RENDER_BACKEND_VULKAN
+                                ? (const void *)options->vk_options
+                                : (const void *)&options->gl_load_proc)) {
+    RN_FATAL(state->log, "Failed to implement rendering backend (Backend: %s)",
+             _backend_type_to_str(options->render_backend));
     rn_state_fini(state);
 
-    RN_FATAL(state->log, "Failed to implement rendering backend (Backend: %s)",
-             _backend_type_to_str(opts.render_backend));
     return NULL;
   }
   state->backend_init = true;
-  state->backend_type = opts.render_backend;
+  state->backend_type = options->render_backend;
 
   state->renderer.canvas.width = init_width;
   state->renderer.canvas.height = init_height;
 
   RN_TRACE(state->log, "Render backend initialized (Backend: %s)",
-           _backend_type_to_str(opts.render_backend));
+           _backend_type_to_str(options->render_backend));
 
   int renderer_res = rn_renderer_init(state);
   if (renderer_res != RN_OK) {
-    rn_state_fini(state);
-
     RN_FATAL(state->log, "Failed to initialize renderer: %s",
              rn_result_to_str(renderer_res));
+
+    rn_state_fini(state);
 
     return NULL;
   }

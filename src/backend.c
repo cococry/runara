@@ -6,7 +6,7 @@
 bool rn_backend_implement(struct rn_backend_impl_t *impl,
                           enum rn_backend_type_t type,
                           const struct rn_allocator_t *alloc,
-                          const struct rn_log_t *log, void *backend_info) {
+                          const struct rn_log_t *log, const void *backend_info) {
 
   if (!impl || !alloc)
     return false;
