@@ -1,6 +1,6 @@
 <img align="left" style="width:128px" src="https://github.com/cococry/runara/blob/master/branding/logo.png" width="128px">
 
-**Runara is a simple, well documented, bloatless 2D texture library**
+**Runara is a simple, well documented, bloatless 2D rendering library**
 
 Runara is a high level abstraction over both Vulkan and OpenGL that renders and manages 2D textures and rectangles. 
 It implements an instanced batch renderer that efficiently draws queued lists of textures and rectangles in an immediate-mode
