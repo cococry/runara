@@ -110,9 +110,9 @@ meson, ninja, gcc, pkg-config, cglm
 
 Depending on the rendering backends you want, you will also need:
 
-- **OpenGL:** OpenGL development libraries
-- **Vulkan:** Vulkan development libraries and headers
-- **Examples:** GLFW3 development libraries
+- **OpenGL:** OpenGL development libraries: `libgl-dev`
+- **Vulkan:** Vulkan development libraries, GLSL, Python: `libvulkan-dev`, `glslang-tools`, `python3`
+- **Examples:** GLFW3, X11 & GL development libraries: `libglfw3-dev`, `libx11-dev`, `libgl-dev`
 
 ### Building
 
@@ -156,3 +156,7 @@ sudo meson install -C build
 ```
 
 You can then link Runara in your own projects using `pkg-config`.
+
+## Documentation
+
+You can take a look at the [examples](https://github.com/cococry/runara/tree/master/examples) or read the [header file](https://github.com/cococry/runara/blob/master/include/runara/runara.h) to get started with using Runara. For Vulkan specific documentation, see the [Vulkan header file](https://github.com/cococry/runara/blob/master/include/runara/vulkan.h) or the [GLFW Vulkan example](https://github.com/cococry/runara/blob/master/examples/image-vk.c)
