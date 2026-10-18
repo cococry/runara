@@ -69,19 +69,28 @@ if build_opengl
 endif
 
 if build_vulkan
+  add_languages('cpp')
   dep_vulkan = dependency('vulkan', required: true)
+  glslang = find_program('glslangValidator', required: true)
+  python = find_program('python3', required: true)
+
+  vulkan_shaders = custom_target(
+    'runara-vulkan-shaders',
+    input: ['shaders/ui.vert', 'shaders/atlas.frag', 'shaders/dedicated.frag'],
+    output: 'runara-vulkan-shaders.c',
+    command: [python, files('tools/make_vk_shaders.py'), glslang,
+              '@OUTPUT@', '@INPUT@'],
+  )
 
   runara_sources += [
     'src/vulkan/backend.c',
+    'src/vulkan/vma.cpp',
+    vulkan_shaders,
   ]
 
-  runara_deps += [
-    dep_vulkan,
-  ]
-
-  runara_cflags += [
-    '-DRN_HAS_VULKAN=1',
-  ]
+  runara_includes += [include_directories('vendor/vma/include')]
+  runara_deps += [dep_vulkan]
+  runara_cflags += ['-DRN_HAS_VULKAN=1']
 endif
 
 runara_lib = static_library(
