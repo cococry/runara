@@ -12,3 +12,12 @@ option(
   value: 'opengl',
   description: 'GPU backends to compile'
 )
+
+option('x11-examples', type: 'boolean', value: true,
+       description: 'Build X11 examples')
+
+option('glfw-examples', type: 'boolean', value: true,
+       description: 'Build GLFW examples')
+
+option('sdl-examples', type: 'boolean', value: true,
+       description: 'Build SDL2 examples')

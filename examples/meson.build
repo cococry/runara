@@ -1,13 +1,29 @@
-example_sources = [
-  'image-gl',
-  'multi-image-gl',
-  'custom-log',
-  'image-vk',
-  'image-gl-x11',
-  'image-vk-x11',
-  'rect-gl',
-  'rect-vk',
-]
+example_sources = []
+
+if get_option('glfw-examples')
+  example_sources += [
+    'image-gl',
+    'multi-image-gl',
+    'image-vk',
+    'rect-gl',
+    'rect-vk',
+    'custom-log-gl',
+  ]
+endif
+
+if get_option('x11-examples')
+  example_sources += [
+    'image-gl-x11',
+    'image-vk-x11',
+  ]
+endif
+
+if get_option('sdl-examples')
+  example_sources += [
+    'rect-gl-sdl',
+    'rect-vk-sdl',
+  ]
+endif
 
 configure_file(
   input: 'image.png',
@@ -21,20 +37,26 @@ configure_file(
   copy: true,
 )
 
-dep_glfw = dependency('glfw3', required: true)
-dep_x11 = dependency('x11', required: true)
-dep_gl = dependency('gl')
+dep_glfw = dependency('glfw3', required: get_option('glfw-examples'))
+dep_x11 = dependency('x11', required: get_option('x11-examples'))
+dep_sdl2 = dependency('sdl2', required: get_option('sdl-examples'))
 
 foreach name : example_sources
+  deps = [runara_dep]
+
+  if name.endswith('-x11')
+    deps += [dep_x11]
+  elif name.endswith('-sdl')
+    deps += [dep_sdl2]
+  else 
+    deps += [dep_glfw]
+  endif
+
   executable(
     'runara-' + name,
     name + '.c',
-    dependencies: [
-      runara_dep,
-      dep_glfw,
-      dep_x11,
-      dep_gl
-    ],
+    dependencies: deps,
     install: false,
   )
 endforeach
+
