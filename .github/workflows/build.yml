@@ -31,7 +31,8 @@ jobs:
             libvulkan-dev \
             libglfw3-dev \
             glslang-tools \
-            libx11-dev
+            libx11-dev \
+            libsdl2-dev
 
       - name: Configure
         run: |
