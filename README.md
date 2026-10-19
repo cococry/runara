@@ -1,4 +1,4 @@
-<img align="left" style="width:128px" src="https://github.com/cococry/runara/blob/master/branding/logo.png" width="128px">
+<img align="left" style="width:100px" src="https://github.com/cococry/runara/blob/master/branding/logo.png" width="100px">
 
 **Runara is a simple, well documented, bloatless 2D rendering library**
 
@@ -102,7 +102,7 @@ Runara 2.0 uses **Meson** as its build system and supports both OpenGL and Vulka
 
 Make sure you have the following build dependencies installed before building Runara:
 
-### Dependencies
+## Dependencies
 
 ```text
 meson, ninja, gcc, pkg-config, cglm
@@ -112,9 +112,15 @@ Depending on the rendering backends you want, you will also need:
 
 - **OpenGL:** OpenGL development libraries: `libgl-dev`
 - **Vulkan:** Vulkan development libraries, GLSL, Python: `libvulkan-dev`, `glslang-tools`, `python3`
-- **Examples:** GLFW3, X11 & GL development libraries: `libglfw3-dev`, `libx11-dev`, `libgl-dev`
+- **Examples:** GLFW3, X11 & SDL development libraries: `libglfw3-dev`, `libx11-dev`, `libsdl2-dev`
 
-### Building
+> [!NOTE]
+> You can disable any windowing system examples if you don't want to install their dependencies:
+```console
+-Dx11-examples=false, -Dglfw-examples=false, -Dsdl-examples=false
+``` 
+
+## Building
 
 Clone the repository:
 
