@@ -147,6 +147,16 @@ Or:
 meson setup build -Dbackends=vulkan -Dexamples=false
 ```
 
+### Running examples
+ > [!IMPORTANT]
+> **Examples expect to run from build/examples, not from the root of the repository.**
+
+After building the examples, run:
+```console
+cd build/examples
+./runara-image-gl
+```
+
 ### Installing
 
 After building Runara, install the library, headers and pkg-config file with:
