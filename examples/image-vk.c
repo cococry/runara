@@ -105,6 +105,10 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
 
+  /* Supply vulkan init options. Use MANAGED for a Runara-managed swapchain &
+   * presentation system. This is preferred for simple usecases like a window.
+   * For more complex usecases, like a wayland compositor managing its own
+   * DRM/GBM handles, use RN_VK_TARGET_EXTERNAL. */
   const struct rn_vk_init_options_t vk_options = {
       .mode = RN_VK_TARGET_MANAGED,
       .platform =

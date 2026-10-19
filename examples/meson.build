@@ -4,6 +4,7 @@ if get_option('glfw-examples')
   example_sources += [
     'image-gl',
     'multi-image-gl',
+    'multi-image-vk',
     'image-vk',
     'rect-gl',
     'rect-vk',

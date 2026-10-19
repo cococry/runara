@@ -85,6 +85,10 @@ int main(void) {
 
     if (rn_end(state) != RN_OK)
       break;
+    
+    /* No glfwSwapBuffers():
+     * Runara handles Vulkan presentation in rn_end().
+     */
   }
 
   rn_state_fini(state);

@@ -311,7 +311,9 @@ int main(int argc, char **argv) {
       goto cleanup;
     }
 
-    /* rn_end() submits and presents through Runara's managed swapchain. */
+    /* No glfwSwapBuffers():
+     * Runara handles Vulkan presentation in rn_end().
+     */
   }
 
   exit_code = EXIT_SUCCESS;
