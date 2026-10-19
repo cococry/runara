@@ -147,6 +147,8 @@ struct rn_backend_impl_t {
                              uint32_t height);
 
   rn_result_t (*clear_color)(void *ctx, rn_color_t color);
+  
+  rn_result_t (*clear_color_buffer)(void *ctx);
 
   rn_result_t (*end_frame)(void *ctx);
 
