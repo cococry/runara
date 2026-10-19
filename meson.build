@@ -1,7 +1,7 @@
 project(
   'runara',
   'c',
-  version: '3.1.0',
+  version: '3.2.0',
   meson_version: '>= 1.2.0',
   default_options: [
     'c_std=c11',

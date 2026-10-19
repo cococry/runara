@@ -170,8 +170,10 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image);
 /* Begin drawing with Runara. */
 rn_result_t rn_begin(struct rn_state_t *state);
 
-/* Clear color buffer. */
+/* Clear color buffer with a specified color. */
 rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color);
+/* Clear color buffer. */
+rn_result_t rn_clear_color_buffer(struct rn_state_t *state, struct rn_color_t color);
 
 /* Draw a rectangle. */
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
