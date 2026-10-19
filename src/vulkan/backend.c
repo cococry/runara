@@ -196,6 +196,7 @@ static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
+static rn_result_t _clear_color_buffer(void *backend_ctx); 
 static rn_result_t _end_frame(void *backend_ctx);
 static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
@@ -258,6 +259,7 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
 static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .begin_frame = _begin_frame,
     .clear_color = _clear_color,
+    .clear_color_buffer = _clear_color_buffer,
     .end_frame = _end_frame,
     .create_buffer = _create_buffer,
     .destroy_buffer = _destroy_buffer,
@@ -1200,6 +1202,26 @@ static rn_result_t _clear_color(void *backend_ctx, rn_color_t color) {
       .colorAttachment = 0,
       .clearValue = {.color = {.float32 = {color.r, color.g, color.b,
                                            color.a}}},
+  };
+
+  const VkClearRect region = {
+      .rect = {{0, 0}, ctx->frame_extent},
+      .baseArrayLayer = 0,
+      .layerCount = 1,
+  };
+
+  vkCmdClearAttachments(ctx->command_buffer, 1, &attachment, 1, &region);
+  return RN_OK;
+}
+
+static rn_result_t _clear_color_buffer(void *backend_ctx) {
+  struct rn_vk_context *ctx = backend_ctx;
+  if (!ctx || !ctx->frame_active)
+    return RN_ERROR_BAD_STATE;
+
+  const VkClearAttachment attachment = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .colorAttachment = 0,
   };
 
   const VkClearRect region = {
