@@ -1,6 +1,7 @@
 example_sources = [
   'image-gl',
   'multi-image-gl',
+  'custom-log',
   'image-vk',
   'image-gl-x11',
   'image-vk-x11',

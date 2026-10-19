@@ -20,27 +20,25 @@
  * SOFTWARE.
  */
 
-
-#ifndef RUNARA_LOG_H
-#define RUNARA_LOG_H
+#pragma once
 
 #include <stdbool.h>
 #include <stdio.h>
 
-enum rn_log_level_t {
-  RN_LL_TRACE = 0,
-  RN_LL_INFO,
-  RN_LL_WARN,
-  RN_LL_ERR,
-  RN_LL_FATAL,
-  RN_LL_COUNT
-};
+#include "runara/runara.h"
 
 struct rn_log_t {
   FILE *stream;
   bool quiet;
   bool verbose;
+
+  rn_log_write_fn_t write_cb;
 };
+
+void rn_log_write_cb_default(FILE *stream, enum rn_log_level_t level,
+                             const char *subsystem, const char *function,
+                             const char *file, int line, const char *fmt,
+                             va_list args);
 
 void rn_log_emit(const struct rn_log_t *log, enum rn_log_level_t level,
                  const char *subsystem, const char *function, const char *file,
@@ -76,4 +74,3 @@ char *rn_log_get_filepath(void);
 
 #define RN_FATAL_HEADLESS(...) RN_LOG_HEADLESS(RN_LL_FATAL, __VA_ARGS__)
 
-#endif

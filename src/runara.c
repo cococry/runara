@@ -55,13 +55,14 @@ static void _log_init(struct rn_state_t *state,
                       const struct rn_log_options_t *log_opts) {
   assert(state && log_opts);
 
-  state->log = (struct rn_log_t){
-      .stream = stdout,
-      .verbose = log_opts->verbose,
-      .quiet = log_opts->quiet,
-  };
+  state->log =
+      (struct rn_log_t){.stream = stdout,
+                        .verbose = log_opts->verbose,
+                        .quiet = log_opts->quiet,
+                        .write_cb = log_opts->log_cb ? log_opts->log_cb
+                                                     : rn_log_write_cb_default};
 
-  if (log_opts->logfile) {
+  if (log_opts->logfile && !log_opts->log_stream) {
     const char *path = rn_log_get_filepath();
     FILE *stream = path ? fopen(path, "a") : NULL;
 
@@ -75,6 +76,12 @@ static void _log_init(struct rn_state_t *state,
       /* Fall back to stdout. */
       RN_ERROR_HEADLESS("failed to open Runara logfile");
     }
+  } else if (log_opts->log_stream) {
+    RN_INFO(state->log, "Logging to host-specified log stream.");
+    setvbuf(log_opts->log_stream, NULL, _IONBF, 0);
+
+    state->log.stream = log_opts->log_stream;
+    state->owns_log_stream = false;
   }
 }
 

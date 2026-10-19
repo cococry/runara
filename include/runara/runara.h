@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 /* A color specified by 0.0-1.0 RGBA channels. */
 typedef struct rn_color_t {
@@ -31,16 +33,42 @@ struct rn_allocator_t {
   void *ctx;
 };
 
+/* Specifies a logging level */
+enum rn_log_level_t {
+  RN_LL_TRACE = 0,
+  RN_LL_INFO,
+  RN_LL_WARN,
+  RN_LL_ERR,
+  RN_LL_FATAL,
+  RN_LL_COUNT
+};
+
+/* Specifies the callback to use for emitting an individual log entry */
+typedef void (*rn_log_write_fn_t)(FILE * stream, enum rn_log_level_t level,
+                                  const char *subsystem, const char *function,
+                                  const char *file, int line, const char *fmt,
+                                  va_list args);
+
 /* Specifies the logging options for Runara */
 struct rn_log_options_t {
-  /* If Runara should log trace logs */
+  /* If Runara should emit RN_TRACE (verbose) logs. */
   bool verbose;
   /* If Runara should not log to the console (still logs to the logfile if
    * logfile is true)*/
   bool quiet;
-  /* If Runara should log to a logfile (at
-   * ~/.local/state/runara/logs/runara-[date-and-time]) */
+  /* If Runara should log to a logfile (default is at
+   * ~/.local/state/runara/logs/runara-[date-and-time]). If stream is supplied,
+   * Runara logs to the supplied filestream. */
   bool logfile;
+  /* The file stream Runara logs to; Optional.
+   * The FILE* is borrowed and not owned by Runara
+   * If not supplied and log_to_file is enabled,
+   * logging goes to ~/.local/state/runara/logs/runara-[date-and-time]) */
+  FILE *log_stream;
+
+  /* The callback to use for emitting an individual log entry; Optional
+   * If not supplied, the default, internal write callback is used. */
+  rn_log_write_fn_t log_cb;
 };
 
 /* Specifies a render backend to use with Runara */
@@ -121,8 +149,9 @@ typedef enum rn_result_t {
 const char *rn_result_to_str(rn_result_t result);
 
 /* Upload a dedicated texture to the renderer. Runara returns the created
- * rn_image_t image. The image wrapper and the underlying GPU texture are owned
- * by the renderer. rn_texture_release() deallocates the underlying GPU texture.
+ * rn_image_t image. Both the image wrapper AND the underlying GPU texture are
+ * owned by the renderer. rn_texture_release() deallocates the underlying GPU
+ * texture.
  */
 rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
                               uint32_t height, const void *rgba,
