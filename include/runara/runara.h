@@ -173,7 +173,7 @@ rn_result_t rn_begin(struct rn_state_t *state);
 /* Clear color buffer with a specified color. */
 rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color);
 /* Clear color buffer. */
-rn_result_t rn_clear_color_buffer(struct rn_state_t *state, struct rn_color_t color);
+rn_result_t rn_clear_color_buffer(struct rn_state_t *state);
 
 /* Draw a rectangle. */
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
