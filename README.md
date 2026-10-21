@@ -18,7 +18,7 @@ manner. One can upload texture data into Runara's managed texture atlas or to di
 - **Highly embeddable**; does not force any display platform  
 - Ability to supply custom shaders 
 
-## Example using GLFW
+## Example using GLFW & OpenGL
 
 ```c
 
@@ -95,6 +95,9 @@ int main(void) {
   return EXIT_SUCCESS;
 }
 ```
+
+> [!NOTE]
+> You can find the same example implemented for **Vulkan** [here](https://github.com/cococry/runara/blob/master/examples/rect-vk.c)
 
 ## Building and installing
 
