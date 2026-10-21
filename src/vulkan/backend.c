@@ -29,11 +29,11 @@
 
 #define VMA_VULKAN_VERSION 1000000
 #include <limits.h>
+#include <shaderc/shaderc.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vk_mem_alloc.h>
-#include <shaderc/shaderc.h>
 
 #define RN_SUBSYS_NAME "VULKAN"
 #define RN_VK_MAX_BINDINGS 8u
@@ -172,9 +172,9 @@ struct rn_vk_context {
   const struct rn_log_t *log;
   struct rn_vk_platform_t platform;
 
-  const char* frag_dedicated;
-  const char* frag_atlas;
-  const char* vert_src;
+  const char *frag_dedicated;
+  const char *frag_atlas;
+  const char *vert_src;
 };
 
 static rn_result_t _result(struct rn_vk_context *ctx, VkResult status,
@@ -201,7 +201,7 @@ static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
-static rn_result_t _clear_color_buffer(void *backend_ctx); 
+static rn_result_t _clear_color_buffer(void *backend_ctx);
 static rn_result_t _end_frame(void *backend_ctx);
 static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
@@ -1687,16 +1687,14 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   VkShaderModule vertex_module = VK_NULL_HANDLE;
   VkShaderModule fragment_module = VK_NULL_HANDLE;
 
-
-  uint32_t* vertex_spv;
+  uint32_t *vertex_spv;
   size_t vertex_spv_size;
   result = _compile_shader(ctx->vert_src, VK_SHADER_STAGE_VERTEX_BIT,
                            &vertex_spv, &vertex_spv_size);
-  if(result != RN_OK)
+  if (result != RN_OK)
     goto fail;
 
-  result = _shader_module(ctx, vertex_spv, vertex_spv_size,
-                          &vertex_module);
+  result = _shader_module(ctx, vertex_spv, vertex_spv_size, &vertex_module);
   if (result != RN_OK)
     goto fail;
 
@@ -1705,8 +1703,8 @@ static rn_result_t _create_pipeline(void *backend_ctx,
                              : ctx->frag_dedicated;
   uint32_t *frag_spv;
   size_t frag_spv_size;
-  result = _compile_shader(frag_src, VK_SHADER_STAGE_FRAGMENT_BIT,
-                           &frag_spv, &frag_spv_size);
+  result = _compile_shader(frag_src, VK_SHADER_STAGE_FRAGMENT_BIT, &frag_spv,
+                           &frag_spv_size);
   if (result != RN_OK)
     goto fail;
 
@@ -2018,96 +2016,82 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
   return RN_OK;
 }
 
+rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
+                            uint32_t **spv, size_t *spv_size) {
+  if (!glsl || !spv || !spv_size)
+    return RN_ERROR_INVALID_ARGUMENT;
 
-rn_result_t _compile_shader(
-    const char *glsl,
-    VkShaderStageFlagBits stage,
-    uint32_t **spv,
-    size_t *spv_size
-) {
-    if (!glsl || !spv || !spv_size)
-        return RN_ERROR_INVALID_ARGUMENT;
+  *spv = NULL;
+  *spv_size = 0;
 
-    *spv = NULL;
-    *spv_size = 0;
+  shaderc_shader_kind kind;
 
-    shaderc_shader_kind kind;
+  switch (stage) {
+  case VK_SHADER_STAGE_VERTEX_BIT:
+    kind = shaderc_vertex_shader;
+    break;
+  case VK_SHADER_STAGE_FRAGMENT_BIT:
+    kind = shaderc_fragment_shader;
+    break;
+  default:
+    return RN_ERROR_INVALID_ARGUMENT;
+  }
 
-    switch (stage) {
-        case VK_SHADER_STAGE_VERTEX_BIT:
-            kind = shaderc_vertex_shader;
-            break;
-        case VK_SHADER_STAGE_FRAGMENT_BIT:
-            kind = shaderc_fragment_shader;
-            break;
-        default:
-            return RN_ERROR_INVALID_ARGUMENT;
-    }
+  shaderc_compiler_t compiler = shaderc_compiler_initialize();
+  if (!compiler)
+    return RN_ERROR_OUT_OF_MEMORY;
 
-    shaderc_compiler_t compiler = shaderc_compiler_initialize();
-    if (!compiler)
-        return RN_ERROR_OUT_OF_MEMORY;
+  shaderc_compile_options_t options = shaderc_compile_options_initialize();
 
-    shaderc_compile_options_t options =
-        shaderc_compile_options_initialize();
+  if (!options) {
+    shaderc_compiler_release(compiler);
+    return RN_ERROR_OUT_OF_MEMORY;
+  }
 
-    if (!options) {
-        shaderc_compiler_release(compiler);
-        return RN_ERROR_OUT_OF_MEMORY;
-    }
+  shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan,
+                                         shaderc_env_version_vulkan_1_0);
 
-    shaderc_compile_options_set_target_env(
-        options,
-        shaderc_target_env_vulkan,
-        shaderc_env_version_vulkan_1_0
-    );
+  shaderc_compilation_result_t result = shaderc_compile_into_spv(
+      compiler, glsl, strlen(glsl), kind,
+      stage == VK_SHADER_STAGE_VERTEX_BIT ? "shader.vert" : "shader.frag",
+      "main", options);
 
-    shaderc_compilation_result_t result = shaderc_compile_into_spv(
-        compiler,
-        glsl,
-        strlen(glsl),
-        kind,
-        stage == VK_SHADER_STAGE_VERTEX_BIT ? "shader.vert" : "shader.frag",
-        "main",
-        options
-    );
+  rn_result_t status = RN_ERROR_BACKEND;
 
-    rn_result_t status = RN_ERROR_BACKEND;
+  if (!result) {
+    status = RN_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
 
-    if (!result) {
-        status = RN_ERROR_OUT_OF_MEMORY;
-        goto cleanup;
-    }
+  if (shaderc_result_get_compilation_status(result) !=
+      shaderc_compilation_status_success) {
+    fprintf(stderr, "Shader compilation error:\n%s\n",
+            shaderc_result_get_error_message(result));
+    goto cleanup;
+  }
 
-    if (shaderc_result_get_compilation_status(result) !=
-        shaderc_compilation_status_success) {
-        fprintf(stderr, "Shader compilation error:\n%s\n",
-                shaderc_result_get_error_message(result));
-        goto cleanup;
-    }
+  size_t size = shaderc_result_get_length(result);
+  uint32_t *data = malloc(size);
 
-    size_t size = shaderc_result_get_length(result);
-    uint32_t *data = malloc(size);
+  if (!data) {
+    status = RN_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
 
-    if (!data) {
-        status = RN_ERROR_OUT_OF_MEMORY;
-        goto cleanup;
-    }
+  memcpy(data, shaderc_result_get_bytes(result), size);
 
-    memcpy(data, shaderc_result_get_bytes(result), size);
-
-    *spv = data;
-    *spv_size = size;
-    status = RN_OK;
+  *spv = data;
+  *spv_size = size;
+  status = RN_OK;
 
 cleanup:
-    if (result)
-        shaderc_result_release(result);
+  if (result)
+    shaderc_result_release(result);
 
-    shaderc_compile_options_release(options);
-    shaderc_compiler_release(compiler);
+  shaderc_compile_options_release(options);
+  shaderc_compiler_release(compiler);
 
-    return status;
+  return status;
 }
 
 static rn_result_t
@@ -2455,7 +2439,9 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
 bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
                              const struct rn_log_t *log,
-                             const void *backend_info, const char* frag_dedicated, const char* frag_atlas) {
+                             const void *backend_info,
+                             const char *frag_dedicated,
+                             const char *frag_atlas) {
   const struct rn_vk_init_options_t *options = backend_info;
 
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free ||

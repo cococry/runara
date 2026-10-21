@@ -20,7 +20,6 @@
  * SOFTWARE.
  */
 
-
 #pragma once
 
 #include "src/log.h"
@@ -147,7 +146,7 @@ struct rn_backend_impl_t {
                              uint32_t height);
 
   rn_result_t (*clear_color)(void *ctx, rn_color_t color);
-  
+
   rn_result_t (*clear_color_buffer)(void *ctx);
 
   rn_result_t (*end_frame)(void *ctx);
@@ -205,20 +204,24 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
                           enum rn_backend_type_t type,
                           const struct rn_allocator_t *alloc,
                           const struct rn_log_t *log, const void *backend_info,
-                          const char* frag_dedicated, const char* frag_atlas);
+                          const char *frag_dedicated, const char *frag_atlas);
 
 #if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
 bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log, const void *backend_info,
-                             const char* frag_dedicated, const char* frag_atlas);
+                             const struct rn_log_t *log,
+                             const void *backend_info,
+                             const char *frag_dedicated,
+                             const char *frag_atlas);
 #endif
 
 #if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
 bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log, const void *backend_info,
-                             const char* frag_dedicated, const char* frag_atlas);
+                             const struct rn_log_t *log,
+                             const void *backend_info,
+                             const char *frag_dedicated,
+                             const char *frag_atlas);
 #endif
 
 void rn_backend_fini(struct rn_backend_impl_t *impl,

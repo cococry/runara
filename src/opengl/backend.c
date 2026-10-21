@@ -114,7 +114,7 @@ static rn_result_t _ensure_pipelines(struct rn_gl_context *ctx);
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
-static rn_result_t _clear_color_buffer(void *backend_ctx); 
+static rn_result_t _clear_color_buffer(void *backend_ctx);
 static rn_result_t _end_frame(void *backend_ctx);
 static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
@@ -569,7 +569,7 @@ _create_shader_program(struct rn_gl_context *ctx,
 
   GLuint fragment_shader = _compile_shader(
       ctx, GL_FRAGMENT_SHADER,
-      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ?ctx->frag_atlas 
+      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ? ctx->frag_atlas
                                                    : ctx->frag_dedicated);
   if (!fragment_shader) {
     glDeleteShader(vertex_shader);
@@ -1126,7 +1126,8 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
                              const struct rn_log_t *log,
                              const void *backend_info,
-                             const char* frag_dedicated, const char* frag_atlas) {
+                             const char *frag_dedicated,
+                             const char *frag_atlas) {
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 

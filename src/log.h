@@ -73,4 +73,3 @@ char *rn_log_get_filepath(void);
 #define RN_ERROR_HEADLESS(...) RN_LOG_HEADLESS(RN_LL_ERR, __VA_ARGS__)
 
 #define RN_FATAL_HEADLESS(...) RN_LOG_HEADLESS(RN_LL_FATAL, __VA_ARGS__)
-

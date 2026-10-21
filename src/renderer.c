@@ -20,7 +20,6 @@
  * SOFTWARE.
  */
 
-
 #define LINESKY_IMPLEMENTATION
 #include "vendor/linesky/linesky.h"
 
