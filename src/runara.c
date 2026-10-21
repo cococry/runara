@@ -153,7 +153,9 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
                             &state->allocator, &state->log,
                             options->render_backend == RN_RENDER_BACKEND_VULKAN
                                 ? (const void *)options->vk_options
-                                : (const void *)&options->gl_load_proc)) {
+                                : (const void *)&options->gl_load_proc,
+                            options->shader_fragment_dedicated_src,
+                            options->shader_fragment_atlas_src)) {
     RN_FATAL(state->log, "Failed to implement rendering backend (Backend: %s)",
              _backend_type_to_str(options->render_backend));
     rn_state_fini(state);

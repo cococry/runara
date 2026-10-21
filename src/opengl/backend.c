@@ -93,6 +93,9 @@ struct rn_gl_context {
 
   const struct rn_allocator_t *alloc;
   const struct rn_log_t *log;
+
+  const char *frag_dedicated;
+  const char *frag_atlas;
 };
 
 static const char *_gl_error_name(GLenum error);
@@ -203,6 +206,7 @@ static const char *_vertex_src =
     "\n"
     "out vec2 v_uv;\n"
     "out vec4 v_color;\n"
+    "flat out vec4 v_rect;\n"
     "flat out int v_layer;\n"
     "flat out int v_kind;\n"
     "flat out int v_texture_slot;\n"
@@ -218,6 +222,7 @@ static const char *_vertex_src =
     "  v_layer = int(i_params.z + 0.5);\n"
     "  v_kind = int(i_params.w + 0.5);\n"
     "  v_texture_slot = int(i_params.x + 0.5);\n"
+    "  v_rect = i_rect;\n"
     "}\n";
 
 static const char *_frag_atlas =
@@ -564,8 +569,8 @@ _create_shader_program(struct rn_gl_context *ctx,
 
   GLuint fragment_shader = _compile_shader(
       ctx, GL_FRAGMENT_SHADER,
-      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ? _frag_atlas
-                                                   : _frag_dedicated);
+      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ?ctx->frag_atlas 
+                                                   : ctx->frag_dedicated);
   if (!fragment_shader) {
     glDeleteShader(vertex_shader);
     return 0;
@@ -1120,7 +1125,8 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
                              const struct rn_log_t *log,
-                             const void *backend_info) {
+                             const void *backend_info,
+                             const char* frag_dedicated, const char* frag_atlas) {
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 
@@ -1175,6 +1181,9 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
     alloc->free(ctx, alloc->ctx);
     return false;
   }
+
+  ctx->frag_atlas = frag_atlas ? frag_atlas : _frag_atlas;
+  ctx->frag_dedicated = frag_dedicated ? frag_dedicated : _frag_dedicated;
 
   ctx->pipeline = RN_INVALID_HANDLE;
   ctx->index_buffer = RN_INVALID_HANDLE;

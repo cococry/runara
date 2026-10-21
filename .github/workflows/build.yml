@@ -32,7 +32,8 @@ jobs:
             libglfw3-dev \
             glslang-tools \
             libx11-dev \
-            libsdl2-dev
+            libsdl2-dev \
+            libshaderc-dev
 
       - name: Configure
         run: |

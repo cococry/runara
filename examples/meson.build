@@ -9,6 +9,8 @@ if get_option('glfw-examples')
     'rect-gl',
     'rect-vk',
     'custom-log-gl',
+    'custom-shader-gl',
+    'custom-shader-vk',
   ]
 endif
 

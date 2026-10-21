@@ -28,7 +28,8 @@
 bool rn_backend_implement(struct rn_backend_impl_t *impl,
                           enum rn_backend_type_t type,
                           const struct rn_allocator_t *alloc,
-                          const struct rn_log_t *log, const void *backend_info) {
+                          const struct rn_log_t *log, const void *backend_info,
+                          const char* frag_dedicated, const char* frag_atlas) {
 
   if (!impl || !alloc)
     return false;
@@ -36,7 +37,7 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
   switch (type) {
   case RN_RENDER_BACKEND_OPENGL:
 #if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
-    return rn_gl_backend_implement(impl, alloc, log, backend_info);
+    return rn_gl_backend_implement(impl, alloc, log, backend_info, frag_dedicated, frag_atlas);
 #else
     RN_ERROR_HEADLESS("OpenGL backend was not compiled into Runara");
     return false;
@@ -44,7 +45,7 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
 
   case RN_RENDER_BACKEND_VULKAN:
 #if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
-    return rn_vk_backend_implement(impl, alloc, log, backend_info);
+    return rn_vk_backend_implement(impl, alloc, log, backend_info, frag_dedicated, frag_atlas);
 #else
     RN_ERROR_HEADLESS("Vulkan backend was not compiled into Runara");
     return false;

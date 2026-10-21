@@ -98,6 +98,21 @@ struct rn_init_options_t {
   const rn_gl_load_proc gl_load_proc;
   /* optional, but needs to be supplied for Vulkan */
   const struct rn_vk_init_options_t *vk_options;
+
+  /* Optional. The GLSL shader source for the dedicated-texture fragment shader.
+   * If you intend to use this option, look at src/[opengl or vulkan]/backend.c
+   * for the internal vertex source (_vertex_src) and dedicated fragment source
+   * (_frag_dedicated). The specified fragment shader needs to be compatible
+   * with the internal vertex shader, as it is fix.
+   * */
+  const char *shader_fragment_dedicated_src;
+  /* Optional. The GLSL shader source for the atlas-subtexture fragment shader.
+   * If you intend to use this option, look at src/[opengl or vulkan]/backend.c
+   * for the internal vertex source (_vertex_src) and atlas fragment source
+   * (_frag_atlas). The specified fragment shader needs to be compatible
+   * with the internal vertex shader, as it is fix.
+   * */
+  const char *shader_fragment_atlas_src;
 };
 
 struct rn_rect_t {

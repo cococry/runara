@@ -25,7 +25,7 @@
 #include "runara/vulkan.h"
 #include "src/internal.h"
 #include "src/log.h"
-#include "src/vulkan/shaders.h"
+#include <vulkan/vulkan_core.h>
 
 #define VMA_VULKAN_VERSION 1000000
 #include <limits.h>
@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vk_mem_alloc.h>
+#include <shaderc/shaderc.h>
 
 #define RN_SUBSYS_NAME "VULKAN"
 #define RN_VK_MAX_BINDINGS 8u
@@ -170,6 +171,10 @@ struct rn_vk_context {
   const struct rn_allocator_t *alloc;
   const struct rn_log_t *log;
   struct rn_vk_platform_t platform;
+
+  const char* frag_dedicated;
+  const char* frag_atlas;
+  const char* vert_src;
 };
 
 static rn_result_t _result(struct rn_vk_context *ctx, VkResult status,
@@ -255,6 +260,103 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
 static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
                                         struct rn_vk_pipeline *pipeline,
                                         VkDescriptorSet *out);
+
+rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
+                            uint32_t **spv, size_t *spv_size);
+
+static const char *_vertex_src =
+    "#version 450\n"
+    "\n"
+    "layout(location = 0) in vec2 a_local_pos;\n"
+    "layout(location = 1) in vec2 a_local_uv;\n"
+    "layout(location = 2) in vec4 i_rect;\n"
+    "layout(location = 3) in vec4 i_color;\n"
+    "layout(location = 4) in vec4 i_uv;\n"
+    "layout(location = 5) in vec4 i_params;\n"
+    "\n"
+    "layout(push_constant) uniform Constants { vec2 u_screen_size; } "
+    "push_data;\n"
+    "\n"
+    "layout(location = 0) out vec2 v_uv;\n"
+    "layout(location = 1) out vec4 v_color;\n"
+    "layout(location = 2) flat out int v_layer;\n"
+    "layout(location = 3) flat out int v_kind;\n"
+    "layout(location = 4) flat out int v_slot;\n"
+    "layout(location = 5) flat out vec4 v_rect;\n"
+    "\n"
+    "void main() {\n"
+    "  vec2 position = i_rect.xy + a_local_pos * i_rect.zw;\n"
+    "  // A positive Vulkan viewport height maps NDC -1 to the top of the "
+    "target.\n"
+    "  vec2 ndc = position / push_data.u_screen_size * 2.0 - 1.0;\n"
+    "  gl_Position = vec4(ndc, 0.0, 1.0);\n"
+    "  v_uv = mix(i_uv.xy, i_uv.zw, a_local_uv);\n"
+    "  v_color = i_color;\n"
+    "  v_layer = int(i_params.z + 0.5);\n"
+    "  v_kind = int(i_params.w + 0.5);\n"
+    "  v_slot = int(i_params.x + 0.5);\n"
+    "  v_rect = i_rect;\n"
+    "}\n";
+
+static const char *_frag_dedicated =
+    "#version 450\n"
+    "\n"
+    "layout(location = 0) in vec2 v_uv;\n"
+    "layout(location = 1) in vec4 v_color;\n"
+    "layout(location = 4) flat in int v_slot;\n"
+    "layout(set = 0, binding = 0) uniform sampler2D u_textures[16];\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "\n"
+    "vec4 sample_texture(int slot, vec2 uv) {\n"
+    "  // Constant sampler indices keep the shader Vulkan 1.0 compatible "
+    "without\n"
+    "  // shaderSampledImageArrayDynamicIndexing.\n"
+    "  switch (slot) {\n"
+    "    case 0: return texture(u_textures[0], uv);\n"
+    "    case 1: return texture(u_textures[1], uv);\n"
+    "    case 2: return texture(u_textures[2], uv);\n"
+    "    case 3: return texture(u_textures[3], uv);\n"
+    "    case 4: return texture(u_textures[4], uv);\n"
+    "    case 5: return texture(u_textures[5], uv);\n"
+    "    case 6: return texture(u_textures[6], uv);\n"
+    "    case 7: return texture(u_textures[7], uv);\n"
+    "    case 8: return texture(u_textures[8], uv);\n"
+    "    case 9: return texture(u_textures[9], uv);\n"
+    "    case 10: return texture(u_textures[10], uv);\n"
+    "    case 11: return texture(u_textures[11], uv);\n"
+    "    case 12: return texture(u_textures[12], uv);\n"
+    "    case 13: return texture(u_textures[13], uv);\n"
+    "    case 14: return texture(u_textures[14], uv);\n"
+    "    case 15: return texture(u_textures[15], uv);\n"
+    "    default: return vec4(1.0);\n"
+    "  }\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "  out_color = sample_texture(v_slot, v_uv) * v_color;\n"
+    "}\n";
+
+static const char *_frag_atlas =
+    "#version 450\n"
+    "\n"
+    "layout(location = 0) in vec2 v_uv;\n"
+    "layout(location = 1) in vec4 v_color;\n"
+    "layout(location = 2) flat in int v_layer;\n"
+    "layout(location = 3) flat in int v_kind;\n"
+    "layout(set = 0, binding = 0) uniform sampler2DArray u_texture_array;\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "\n"
+    "void main() {\n"
+    "  if (v_kind == 0) {\n"
+    "    out_color = v_color;\n"
+    "    return;\n"
+    "  }\n"
+    "  vec4 texel = texture(u_texture_array, vec3(v_uv, float(v_layer)));\n"
+    "  if (v_kind == 1)\n"
+    "    out_color = vec4(v_color.rgb, v_color.a * texel.a);\n"
+    "  else\n"
+    "    out_color = texel * v_color;\n"
+    "}\n";
 
 static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .begin_frame = _begin_frame,
@@ -1493,8 +1595,10 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
   struct rn_vk_pipeline *entries =
       _grow(ctx, ctx->pipelines, ctx->pipeline_count, sizeof(*entries));
+
   if (!entries)
     return RN_ERROR_OUT_OF_MEMORY;
+
   ctx->pipelines = entries;
   struct rn_vk_pipeline pipeline = {.shader = desc->shader};
 
@@ -1582,18 +1686,32 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
   VkShaderModule vertex_module = VK_NULL_HANDLE;
   VkShaderModule fragment_module = VK_NULL_HANDLE;
-  result = _shader_module(ctx, rn_vk_vertex_spv, rn_vk_vertex_spv_size,
+
+
+  uint32_t* vertex_spv;
+  size_t vertex_spv_size;
+  result = _compile_shader(ctx->vert_src, VK_SHADER_STAGE_VERTEX_BIT,
+                           &vertex_spv, &vertex_spv_size);
+  if(result != RN_OK)
+    goto fail;
+
+  result = _shader_module(ctx, vertex_spv, vertex_spv_size,
                           &vertex_module);
   if (result != RN_OK)
     goto fail;
 
-  const uint32_t *fragment_code = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
-                                      ? rn_vk_atlas_spv
-                                      : rn_vk_dedicated_spv;
-  size_t fragment_size = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
-                             ? rn_vk_atlas_spv_size
-                             : rn_vk_dedicated_spv_size;
-  result = _shader_module(ctx, fragment_code, fragment_size, &fragment_module);
+  const char *frag_src = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
+                             ? ctx->frag_atlas
+                             : ctx->frag_dedicated;
+  uint32_t *frag_spv;
+  size_t frag_spv_size;
+  result = _compile_shader(frag_src, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           &frag_spv, &frag_spv_size);
+  if (result != RN_OK)
+    goto fail;
+
+  result = _shader_module(ctx, frag_spv, frag_spv_size, &fragment_module);
+
   if (result != RN_OK) {
     vkDestroyShaderModule(ctx->device, vertex_module, NULL);
     goto fail;
@@ -1765,10 +1883,12 @@ static rn_result_t _set_uniform_2f(void *backend_ctx,
   struct rn_vk_context *ctx = backend_ctx;
   if (!ctx || !ctx->frame_active || !name || ctx->pipeline != handle ||
       strcmp(name, "u_screen_size"))
+
     return RN_ERROR_BAD_STATE;
   struct rn_vk_pipeline *pipeline = _pipeline(ctx, handle);
   if (!pipeline)
     return RN_ERROR_INVALID_ARGUMENT;
+
   const float values[2] = {x, y};
   vkCmdPushConstants(ctx->command_buffer, pipeline->layout,
                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(values), values);
@@ -1791,17 +1911,16 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
   return RN_OK;
 }
 
-/* Vulkan descriptor sets must be immutable once recorded into an in-flight
- * command buffer. Cache a set for each unique texture combination, never
- * rewrite a previously used set. The pool grows by pages when needed. */
 static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
                                         struct rn_vk_pipeline *pipeline,
                                         VkDescriptorSet *out) {
   const uint32_t count = pipeline->descriptor_count;
   rn_texture_handle_t textures[RN_VK_MAX_TEXTURES];
   rn_texture_handle_t fallback = ctx->bound_textures[0];
+
   if (!_texture(ctx, fallback))
     return RN_ERROR_BAD_STATE;
+
   for (uint32_t slot = 0; slot < count; ++slot) {
     rn_texture_handle_t handle = ctx->bound_textures[slot];
     textures[slot] = _texture(ctx, handle) ? handle : fallback;
@@ -1811,6 +1930,7 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
        entry = entry->next) {
     if (entry->count == count &&
         !memcmp(textures, entry->textures, count * sizeof(*textures))) {
+      /* cache hit */
       *out = entry->set;
       return RN_OK;
     }
@@ -1845,6 +1965,7 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
     };
     VkResult status =
         vkCreateDescriptorPool(ctx->device, &pool_info, NULL, &new_page->pool);
+
     if (status != VK_SUCCESS) {
       ctx->alloc->free(new_page, ctx->alloc->ctx);
       ctx->alloc->free(entry, ctx->alloc->ctx);
@@ -1889,11 +2010,104 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
       .pImageInfo = images,
   };
+
   vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
   entry->next = pipeline->descriptors;
   pipeline->descriptors = entry;
   *out = entry->set;
   return RN_OK;
+}
+
+
+rn_result_t _compile_shader(
+    const char *glsl,
+    VkShaderStageFlagBits stage,
+    uint32_t **spv,
+    size_t *spv_size
+) {
+    if (!glsl || !spv || !spv_size)
+        return RN_ERROR_INVALID_ARGUMENT;
+
+    *spv = NULL;
+    *spv_size = 0;
+
+    shaderc_shader_kind kind;
+
+    switch (stage) {
+        case VK_SHADER_STAGE_VERTEX_BIT:
+            kind = shaderc_vertex_shader;
+            break;
+        case VK_SHADER_STAGE_FRAGMENT_BIT:
+            kind = shaderc_fragment_shader;
+            break;
+        default:
+            return RN_ERROR_INVALID_ARGUMENT;
+    }
+
+    shaderc_compiler_t compiler = shaderc_compiler_initialize();
+    if (!compiler)
+        return RN_ERROR_OUT_OF_MEMORY;
+
+    shaderc_compile_options_t options =
+        shaderc_compile_options_initialize();
+
+    if (!options) {
+        shaderc_compiler_release(compiler);
+        return RN_ERROR_OUT_OF_MEMORY;
+    }
+
+    shaderc_compile_options_set_target_env(
+        options,
+        shaderc_target_env_vulkan,
+        shaderc_env_version_vulkan_1_0
+    );
+
+    shaderc_compilation_result_t result = shaderc_compile_into_spv(
+        compiler,
+        glsl,
+        strlen(glsl),
+        kind,
+        stage == VK_SHADER_STAGE_VERTEX_BIT ? "shader.vert" : "shader.frag",
+        "main",
+        options
+    );
+
+    rn_result_t status = RN_ERROR_BACKEND;
+
+    if (!result) {
+        status = RN_ERROR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    if (shaderc_result_get_compilation_status(result) !=
+        shaderc_compilation_status_success) {
+        fprintf(stderr, "Shader compilation error:\n%s\n",
+                shaderc_result_get_error_message(result));
+        goto cleanup;
+    }
+
+    size_t size = shaderc_result_get_length(result);
+    uint32_t *data = malloc(size);
+
+    if (!data) {
+        status = RN_ERROR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    memcpy(data, shaderc_result_get_bytes(result), size);
+
+    *spv = data;
+    *spv_size = size;
+    status = RN_OK;
+
+cleanup:
+    if (result)
+        shaderc_result_release(result);
+
+    shaderc_compile_options_release(options);
+    shaderc_compiler_release(compiler);
+
+    return status;
 }
 
 static rn_result_t
@@ -2241,7 +2455,7 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
 bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
                              const struct rn_log_t *log,
-                             const void *backend_info) {
+                             const void *backend_info, const char* frag_dedicated, const char* frag_atlas) {
   const struct rn_vk_init_options_t *options = backend_info;
 
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free ||
@@ -2261,6 +2475,11 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
     return false;
 
   memset(ctx, 0, sizeof(*ctx));
+
+  ctx->frag_dedicated = frag_dedicated ? frag_dedicated : _frag_dedicated;
+  ctx->frag_atlas = frag_atlas ? frag_atlas : _frag_atlas;
+  ctx->vert_src = _vertex_src;
+
   ctx->alloc = alloc;
   ctx->log = log;
   ctx->config = *options;
