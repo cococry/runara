@@ -16,7 +16,7 @@ manner. One can upload texture data into Runara's managed texture atlas or to di
 - Merging of adjacent render batches
 - Optimized 3D texture atlas
 - **Highly embeddable**; does not force any display platform  
-- Ability to supply custom shaders 
+- Ability to supply [custom shaders](https://github.com/cococry/runara/blob/master/examples/custom-shader-gl.c)
 
 ## Example using GLFW & OpenGL
 
