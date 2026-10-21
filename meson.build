@@ -1,7 +1,7 @@
 project(
   'runara',
   'c',
-  version: '3.3.0',
+  version: '3.3.1',
   meson_version: '>= 1.2.0',
   default_options: [
     'c_std=c11',
@@ -72,11 +72,28 @@ if build_vulkan
   add_languages('cpp')
   dep_vulkan = dependency('vulkan', required: true)
   shaderc_dep = dependency('shaderc', required: true)
+  glslang = find_program('glslangValidator', required: true)
+  python = find_program('python3', required: true)
+
+  vulkan_shaders = custom_target(
+    'runara-vulkan-shaders',
+    input: ['shaders/ui.vert', 'shaders/atlas.frag', 'shaders/dedicated.frag'],
+    output: 'runara-vulkan-shaders.c',
+    command: [
+      python,
+      files('tools/make_vk_shaders.py'),
+      glslang,
+      '@OUTPUT@',
+      '@INPUT@',
+    ],
+  )
 
   runara_sources += [
     'src/vulkan/backend.c',
     'src/vulkan/vma.cpp',
-    ]
+    vulkan_shaders,
+  ]
+
   runara_includes += [include_directories('vendor/vma/include')]
   runara_deps += [dep_vulkan, shaderc_dep]
   runara_cflags += ['-DRN_HAS_VULKAN=1']

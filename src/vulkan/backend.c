@@ -23,6 +23,7 @@
 #include "src/backend.h"
 #include "runara/runara.h"
 #include "runara/vulkan.h"
+#include "shaders.h"
 #include "src/internal.h"
 #include "src/log.h"
 #include <vulkan/vulkan_core.h>
@@ -263,100 +264,6 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
 
 rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
                             uint32_t **spv, size_t *spv_size);
-
-static const char *_vertex_src =
-    "#version 450\n"
-    "\n"
-    "layout(location = 0) in vec2 a_local_pos;\n"
-    "layout(location = 1) in vec2 a_local_uv;\n"
-    "layout(location = 2) in vec4 i_rect;\n"
-    "layout(location = 3) in vec4 i_color;\n"
-    "layout(location = 4) in vec4 i_uv;\n"
-    "layout(location = 5) in vec4 i_params;\n"
-    "\n"
-    "layout(push_constant) uniform Constants { vec2 u_screen_size; } "
-    "push_data;\n"
-    "\n"
-    "layout(location = 0) out vec2 v_uv;\n"
-    "layout(location = 1) out vec4 v_color;\n"
-    "layout(location = 2) flat out int v_layer;\n"
-    "layout(location = 3) flat out int v_kind;\n"
-    "layout(location = 4) flat out int v_slot;\n"
-    "layout(location = 5) flat out vec4 v_rect;\n"
-    "\n"
-    "void main() {\n"
-    "  vec2 position = i_rect.xy + a_local_pos * i_rect.zw;\n"
-    "  // A positive Vulkan viewport height maps NDC -1 to the top of the "
-    "target.\n"
-    "  vec2 ndc = position / push_data.u_screen_size * 2.0 - 1.0;\n"
-    "  gl_Position = vec4(ndc, 0.0, 1.0);\n"
-    "  v_uv = mix(i_uv.xy, i_uv.zw, a_local_uv);\n"
-    "  v_color = i_color;\n"
-    "  v_layer = int(i_params.z + 0.5);\n"
-    "  v_kind = int(i_params.w + 0.5);\n"
-    "  v_slot = int(i_params.x + 0.5);\n"
-    "  v_rect = i_rect;\n"
-    "}\n";
-
-static const char *_frag_dedicated =
-    "#version 450\n"
-    "\n"
-    "layout(location = 0) in vec2 v_uv;\n"
-    "layout(location = 1) in vec4 v_color;\n"
-    "layout(location = 4) flat in int v_slot;\n"
-    "layout(set = 0, binding = 0) uniform sampler2D u_textures[16];\n"
-    "layout(location = 0) out vec4 out_color;\n"
-    "\n"
-    "vec4 sample_texture(int slot, vec2 uv) {\n"
-    "  // Constant sampler indices keep the shader Vulkan 1.0 compatible "
-    "without\n"
-    "  // shaderSampledImageArrayDynamicIndexing.\n"
-    "  switch (slot) {\n"
-    "    case 0: return texture(u_textures[0], uv);\n"
-    "    case 1: return texture(u_textures[1], uv);\n"
-    "    case 2: return texture(u_textures[2], uv);\n"
-    "    case 3: return texture(u_textures[3], uv);\n"
-    "    case 4: return texture(u_textures[4], uv);\n"
-    "    case 5: return texture(u_textures[5], uv);\n"
-    "    case 6: return texture(u_textures[6], uv);\n"
-    "    case 7: return texture(u_textures[7], uv);\n"
-    "    case 8: return texture(u_textures[8], uv);\n"
-    "    case 9: return texture(u_textures[9], uv);\n"
-    "    case 10: return texture(u_textures[10], uv);\n"
-    "    case 11: return texture(u_textures[11], uv);\n"
-    "    case 12: return texture(u_textures[12], uv);\n"
-    "    case 13: return texture(u_textures[13], uv);\n"
-    "    case 14: return texture(u_textures[14], uv);\n"
-    "    case 15: return texture(u_textures[15], uv);\n"
-    "    default: return vec4(1.0);\n"
-    "  }\n"
-    "}\n"
-    "\n"
-    "void main() {\n"
-    "  out_color = sample_texture(v_slot, v_uv) * v_color;\n"
-    "}\n";
-
-static const char *_frag_atlas =
-    "#version 450\n"
-    "\n"
-    "layout(location = 0) in vec2 v_uv;\n"
-    "layout(location = 1) in vec4 v_color;\n"
-    "layout(location = 2) flat in int v_layer;\n"
-    "layout(location = 3) flat in int v_kind;\n"
-    "layout(set = 0, binding = 0) uniform sampler2DArray u_texture_array;\n"
-    "layout(location = 0) out vec4 out_color;\n"
-    "\n"
-    "void main() {\n"
-    "  if (v_kind == 0) {\n"
-    "    out_color = v_color;\n"
-    "    return;\n"
-    "  }\n"
-    "  vec4 texel = texture(u_texture_array, vec3(v_uv, float(v_layer)));\n"
-    "  if (v_kind == 1)\n"
-    "    out_color = vec4(v_color.rgb, v_color.a * texel.a);\n"
-    "  else\n"
-    "    out_color = texel * v_color;\n"
-    "}\n";
 
 static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .begin_frame = _begin_frame,
@@ -1687,26 +1594,34 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   VkShaderModule vertex_module = VK_NULL_HANDLE;
   VkShaderModule fragment_module = VK_NULL_HANDLE;
 
-  uint32_t *vertex_spv;
-  size_t vertex_spv_size;
-  result = _compile_shader(ctx->vert_src, VK_SHADER_STAGE_VERTEX_BIT,
-                           &vertex_spv, &vertex_spv_size);
-  if (result != RN_OK)
-    goto fail;
+  uint32_t *vertex_spv = (uint32_t*)rn_vk_vertex_spv;
+  size_t vertex_spv_size = rn_vk_vertex_spv_size;
 
   result = _shader_module(ctx, vertex_spv, vertex_spv_size, &vertex_module);
   if (result != RN_OK)
     goto fail;
 
-  const char *frag_src = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
-                             ? ctx->frag_atlas
-                             : ctx->frag_dedicated;
-  uint32_t *frag_spv;
-  size_t frag_spv_size;
-  result = _compile_shader(frag_src, VK_SHADER_STAGE_FRAGMENT_BIT, &frag_spv,
-                           &frag_spv_size);
-  if (result != RN_OK)
-    goto fail;
+  uint32_t *frag_spv = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
+                           ? (uint32_t*)rn_vk_atlas_spv
+                           : (uint32_t*)rn_vk_dedicated_spv;
+  size_t frag_spv_size = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
+                             ? rn_vk_atlas_spv_size
+                             : rn_vk_dedicated_spv_size;
+
+  if (ctx->frag_atlas && desc->shader == RN_PIPELINE_UI_QUAD_ATLAS) {
+    result = _compile_shader(ctx->frag_atlas, VK_SHADER_STAGE_FRAGMENT_BIT,
+                             &frag_spv, &frag_spv_size);
+    if (result != RN_OK) {
+      goto fail;
+    }
+  } else if (ctx->frag_dedicated &&
+             desc->shader == RN_PIPELINE_UI_QUAD_DEDICATED) {
+    result = _compile_shader(ctx->frag_dedicated, VK_SHADER_STAGE_FRAGMENT_BIT,
+                             &frag_spv, &frag_spv_size);
+    if (result != RN_OK) {
+      goto fail;
+    }
+  }
 
   result = _shader_module(ctx, frag_spv, frag_spv_size, &fragment_module);
 
@@ -2462,9 +2377,8 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
 
   memset(ctx, 0, sizeof(*ctx));
 
-  ctx->frag_dedicated = frag_dedicated ? frag_dedicated : _frag_dedicated;
-  ctx->frag_atlas = frag_atlas ? frag_atlas : _frag_atlas;
-  ctx->vert_src = _vertex_src;
+  ctx->frag_dedicated = frag_dedicated;
+  ctx->frag_atlas = frag_atlas; 
 
   ctx->alloc = alloc;
   ctx->log = log;
