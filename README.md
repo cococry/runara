@@ -11,11 +11,11 @@ manner. One can upload texture data into Runara's managed texture atlas or to di
 <br>
 
 ## Features
-- Vulkan 1.0 backend implementation  
-- OpenGL 3.3 backend implementation  
+- **Vulkan & OpenGL** backend support 
 - Efficient instanced & batched 2D renderer 
 - Merging of adjacent render batches
-- Optimized 3D texture atlas  
+- Optimized 3D texture atlas
+- **Highly embeddable**; does not force any display platform  
 - Ability to supply custom shaders 
 
 ## Example using GLFW
