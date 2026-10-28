@@ -772,7 +772,8 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
     if (!count)
       return RN_ERROR_BACKEND;
 
-    VkPresentModeKHR *modes = ctx->alloc->alloc(count * sizeof(*modes), ctx->alloc->ctx);
+    VkPresentModeKHR *modes =
+        ctx->alloc->alloc(count * sizeof(*modes), ctx->alloc->ctx);
 
     if (!modes)
       return RN_ERROR_OUT_OF_MEMORY;
@@ -797,7 +798,8 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
       return _result(ctx, status, "vkGetPhysicalDeviceSurfacePresentModesKHR");
 
     if (present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR) {
-      _VK_ERROR(ctx->log, "surface does not support presentation without vsync");
+      _VK_ERROR(ctx->log,
+                "surface does not support presentation without vsync");
       return RN_ERROR_BACKEND;
     }
   }
@@ -1093,25 +1095,27 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
         .commandBufferCount = 1,
     };
 
-    result = _result(ctx, vkAllocateCommandBuffers(ctx->device, &command_info,
-                                                   &frame->command),
-                     "vkAllocateCommandBuffers(frame)");
+    result = _result(
+        ctx,
+        vkAllocateCommandBuffers(ctx->device, &command_info, &frame->command),
+        "vkAllocateCommandBuffers(frame)");
 
     if (result != RN_OK)
       return result;
 
     if (ctx->mode == RN_VK_TARGET_MANAGED) {
-      result = _result(ctx, vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
-                                              &frame->image_available),
+      result = _result(ctx,
+                       vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
+                                         &frame->image_available),
                        "vkCreateSemaphore(image available)");
 
       if (result != RN_OK)
         return result;
     }
 
-    result = _result(ctx, vkCreateFence(ctx->device, &fence_info, NULL,
-                                        &frame->fence),
-                     "vkCreateFence(frame)");
+    result = _result(
+        ctx, vkCreateFence(ctx->device, &fence_info, NULL, &frame->fence),
+        "vkCreateFence(frame)");
 
     if (result != RN_OK)
       return result;
@@ -1132,8 +1136,7 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
   struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
 
   rn_result_t result = _result(
-      ctx,
-      vkWaitForFences(ctx->device, 1, &frame->fence, VK_TRUE, UINT64_MAX),
+      ctx, vkWaitForFences(ctx->device, 1, &frame->fence, VK_TRUE, UINT64_MAX),
       "vkWaitForFences(frame)");
 
   if (result != RN_OK)
@@ -1216,10 +1219,12 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
     if (!target)
       return RN_ERROR_BAD_STATE;
 
-    /* a borrowed target cannot be rendered again while its prior use is pending */
+    /* a borrowed target cannot be rendered again while its prior use is pending
+     */
     if (target->render_fence && target->render_fence != frame->fence) {
-      result = _result(ctx, vkWaitForFences(ctx->device, 1, &target->render_fence,
-                                            VK_TRUE, UINT64_MAX),
+      result = _result(ctx,
+                       vkWaitForFences(ctx->device, 1, &target->render_fence,
+                                       VK_TRUE, UINT64_MAX),
                        "vkWaitForFences(external target)");
 
       if (result != RN_OK)
@@ -1546,9 +1551,9 @@ static rn_result_t _create_buffer(void *backend_ctx,
                                 .target = desc->target};
 
   VmaAllocationInfo allocation_info;
-  VkResult status = vmaCreateBuffer(ctx->vma, &buffer_info, &alloc_info,
-                                    &buffer.buffer, &buffer.allocation,
-                                    &allocation_info);
+  VkResult status =
+      vmaCreateBuffer(ctx->vma, &buffer_info, &alloc_info, &buffer.buffer,
+                      &buffer.allocation, &allocation_info);
 
   if (status != VK_SUCCESS)
     return _result(ctx, status, "vmaCreateBuffer");
@@ -1614,7 +1619,8 @@ static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
   if (!size)
     return RN_OK;
 
-  /* writes outside a frame initialize every region after pending readers finish */
+  /* writes outside a frame initialize every region after pending readers finish
+   */
   if (ctx->frame_submitted && (!buffer->frame_stride || !ctx->frame_active)) {
     rn_result_t result = _result(ctx, vkDeviceWaitIdle(ctx->device),
                                  "vkDeviceWaitIdle(buffer write)");
@@ -1623,16 +1629,17 @@ static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
       return result;
   }
 
-  uint32_t first = buffer->frame_stride && ctx->frame_active ? ctx->frame_index : 0;
+  uint32_t first =
+      buffer->frame_stride && ctx->frame_active ? ctx->frame_index : 0;
 
-  uint32_t count = buffer->frame_stride && !ctx->frame_active
-                       ? RN_VK_FRAMES_IN_FLIGHT : 1;
+  uint32_t count =
+      buffer->frame_stride && !ctx->frame_active ? RN_VK_FRAMES_IN_FLIGHT : 1;
 
   for (uint32_t i = first; i < first + count; ++i) {
     VkDeviceSize write_offset = buffer->frame_stride * i + offset;
     memcpy((unsigned char *)buffer->mapped + write_offset, data, size);
-    VkResult status = vmaFlushAllocation(ctx->vma, buffer->allocation,
-                                         write_offset, size);
+    VkResult status =
+        vmaFlushAllocation(ctx->vma, buffer->allocation, write_offset, size);
 
     if (status != VK_SUCCESS)
       return _result(ctx, status, "vmaFlushAllocation(buffer)");
@@ -3121,13 +3128,13 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
   if (!ctx->frame_submitted)
     return RN_OK;
 
-  uint32_t last = (ctx->frame_index + RN_VK_FRAMES_IN_FLIGHT - 1) %
-                  RN_VK_FRAMES_IN_FLIGHT;
+  uint32_t last =
+      (ctx->frame_index + RN_VK_FRAMES_IN_FLIGHT - 1) % RN_VK_FRAMES_IN_FLIGHT;
 
-  return _result(
-      ctx,
-      vkWaitForFences(ctx->device, 1, &ctx->frames[last].fence, VK_TRUE, UINT64_MAX),
-      "vkWaitForFences(render complete)");
+  return _result(ctx,
+                 vkWaitForFences(ctx->device, 1, &ctx->frames[last].fence,
+                                 VK_TRUE, UINT64_MAX),
+                 "vkWaitForFences(render complete)");
 }
 
 rn_result_t rn_vk_target_unregister(struct rn_state_t *state,

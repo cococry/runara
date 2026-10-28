@@ -7,7 +7,7 @@
 #include "runara/vulkan.h"
 #include <GLFW/glfw3.h>
 
-#define RECT_COUNT 1000
+#define RECT_COUNT 10000
 
 static const char *const *_extensions(void *user, uint32_t *count) {
   (void)user;
@@ -44,7 +44,7 @@ int main(void) {
   }
 
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  window = glfwCreateWindow(1280, 720, "Runara: 1000 rectangles, vsync off", NULL, NULL);
+  window = glfwCreateWindow(1280, 720, "Runara: Rectangles, vsync off", NULL, NULL);
 
   if (!window)
     goto cleanup;
@@ -158,9 +158,9 @@ int main(void) {
 
     if (elapsed >= 1.0) {
       double fps = frames / elapsed;
-      snprintf(title, sizeof(title), "Runara: 1000 rectangles, vsync off | %.1f FPS", fps);
+      snprintf(title, sizeof(title), "Runara: %i rectangles, vsync off | %.1f FPS", RECT_COUNT, fps);
       glfwSetWindowTitle(window, title);
-      printf("1000 rectangles | %.1f FPS | %.3f ms/frame\n", fps, 1000.0 / fps);
+      printf("%i rectangles | %.1f FPS | %.3f ms/frame\n", RECT_COUNT, fps, 1000.0 / fps);
       fflush(stdout);
       report_start = now;
       frames = 0;
