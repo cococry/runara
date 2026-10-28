@@ -28,6 +28,11 @@ struct rn_vk_surface_impl_t {
 
   /* Returns the window framebuffer dimensions in physical pixels. */
   void (*framebuffer_size)(void *user, uint32_t *width, uint32_t *height);
+
+  /* Requests immediate presentation without vsync. Creation fails if unsupported.
+   * False preserves the default FIFO presentation mode.
+   */
+  bool disable_vsync;
 };
 
 /* Specifies options for Vulkan initialization */

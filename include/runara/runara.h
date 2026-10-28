@@ -202,8 +202,7 @@ rn_result_t rn_draw_texture(struct rn_state_t *state,
 /* End drawing with Runara. */
 rn_result_t rn_end(struct rn_state_t *state);
 
-/* Init runara state. init_width and init_height are used as the initial
- * canvas dimensions. */
+/* Init runara state. */ 
 struct rn_state_t *rn_state_init(const struct rn_init_options_t *options);
 
 /* Destroy runara state. */

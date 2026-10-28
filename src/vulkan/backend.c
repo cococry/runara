@@ -38,6 +38,7 @@
 
 #define RN_SUBSYS_NAME "VULKAN"
 #define RN_VK_MAX_BINDINGS 8u
+#define RN_VK_FRAMES_IN_FLIGHT 3u
 #define RN_VK_MAX_TEXTURES 16u
 #define RN_VK_DESCRIPTOR_PAGE_SIZE 128u
 
@@ -58,7 +59,9 @@
 struct rn_vk_buffer {
   VkBuffer buffer;
   VmaAllocation allocation;
+  void *mapped;
   VkDeviceSize size;
+  VkDeviceSize frame_stride;
   enum rn_buffer_target_t target;
   bool alive;
 };
@@ -104,6 +107,7 @@ struct rn_vk_external_target {
   VkImageView view;
   VkFramebuffer framebuffer;
   VkExtent2D extent;
+  VkFence render_fence;
   bool alive;
   bool used;
 };
@@ -129,6 +133,13 @@ struct rn_vk_managed_surface_t {
   struct rn_vk_managed_surface_t *next;
 };
 
+struct rn_vk_frame {
+  VkCommandPool pool;
+  VkCommandBuffer command;
+  VkSemaphore image_available;
+  VkFence fence;
+};
+
 struct rn_vk_context {
   enum rn_vk_target_mode_t mode;
   struct rn_vk_init_options_t config;
@@ -149,10 +160,8 @@ struct rn_vk_context {
   bool fatal;
   bool tearing_down;
 
-  VkCommandPool frame_pool;
-  VkCommandBuffer frame_command;
-  VkSemaphore image_available;
-  VkFence frame_fence;
+  struct rn_vk_frame frames[RN_VK_FRAMES_IN_FLIGHT];
+  uint32_t frame_index;
 
   VkPhysicalDevice physical_device;
   VkDevice device;
@@ -750,6 +759,49 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
   if (!requested_width || !requested_height)
     return RN_ERROR_BAD_STATE;
 
+  VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+
+  if (surface->impl.disable_vsync) {
+    uint32_t count = 0;
+    VkResult status = vkGetPhysicalDeviceSurfacePresentModesKHR(
+        ctx->physical_device, surface->vk_surface, &count, NULL);
+
+    if (status != VK_SUCCESS)
+      return _result(ctx, status, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+
+    if (!count)
+      return RN_ERROR_BACKEND;
+
+    VkPresentModeKHR *modes = ctx->alloc->alloc(count * sizeof(*modes), ctx->alloc->ctx);
+
+    if (!modes)
+      return RN_ERROR_OUT_OF_MEMORY;
+
+    status = vkGetPhysicalDeviceSurfacePresentModesKHR(
+        ctx->physical_device, surface->vk_surface, &count, modes);
+
+    if (status == VK_SUCCESS) {
+
+      for (uint32_t i = 0; i < count; ++i) {
+
+        if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+          present_mode = modes[i];
+          break;
+        }
+      }
+    }
+
+    ctx->alloc->free(modes, ctx->alloc->ctx);
+
+    if (status != VK_SUCCESS)
+      return _result(ctx, status, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+
+    if (present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR) {
+      _VK_ERROR(ctx->log, "surface does not support presentation without vsync");
+      return RN_ERROR_BACKEND;
+    }
+  }
+
   VkSurfaceCapabilitiesKHR capabilities;
   VkResult status = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
       ctx->physical_device, surface->vk_surface, &capabilities);
@@ -875,7 +927,7 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
           ctx->queue_family == surface->present_family ? NULL : families,
       .preTransform = capabilities.currentTransform,
       .compositeAlpha = alpha,
-      .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+      .presentMode = present_mode,
       .clipped = VK_TRUE,
   };
 
@@ -993,63 +1045,79 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
   return RN_OK;
 }
 
+static void _destroy_frame_commands(struct rn_vk_context *ctx) {
+
+  for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
+    struct rn_vk_frame *frame = &ctx->frames[i];
+
+    if (frame->fence)
+      vkDestroyFence(ctx->device, frame->fence, NULL);
+
+    if (frame->image_available)
+      vkDestroySemaphore(ctx->device, frame->image_available, NULL);
+
+    if (frame->pool)
+      vkDestroyCommandPool(ctx->device, frame->pool, NULL);
+  }
+}
+
 static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
 
   const VkCommandPoolCreateInfo pool_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
       .queueFamilyIndex = ctx->queue_family,
   };
 
-  /* create command pool */
-  rn_result_t result = _result(
-      ctx, vkCreateCommandPool(ctx->device, &pool_info, NULL, &ctx->frame_pool),
-      "vkCreateCommandPool(frame)");
-
-  if (result != RN_OK)
-    return result;
-
-  const VkCommandBufferAllocateInfo command_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .commandPool = ctx->frame_pool,
-      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-      .commandBufferCount = 1,
+  const VkSemaphoreCreateInfo semaphore_info = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
   };
-
-  /* create frame command buffer */
-  result = _result(
-      ctx,
-      vkAllocateCommandBuffers(ctx->device, &command_info, &ctx->frame_command),
-      "vkAllocateCommandBuffers(frame)");
-
-  if (result != RN_OK)
-    return result;
-
-  if (ctx->mode == RN_VK_TARGET_MANAGED) {
-
-    const VkSemaphoreCreateInfo semaphore_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-    };
-
-    /* create image available semaphore */
-    result = _result(ctx,
-                     vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
-                                       &ctx->image_available),
-                     "vkCreateSemaphore(image available)");
-
-    if (result != RN_OK)
-      return result;
-  }
 
   const VkFenceCreateInfo fence_info = {
       .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
       .flags = VK_FENCE_CREATE_SIGNALED_BIT,
   };
 
-  /* create frame fence */
-  return _result(
-      ctx, vkCreateFence(ctx->device, &fence_info, NULL, &ctx->frame_fence),
-      "vkCreateFence(frame)");
+  for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
+    struct rn_vk_frame *frame = &ctx->frames[i];
+    rn_result_t result = _result(
+        ctx, vkCreateCommandPool(ctx->device, &pool_info, NULL, &frame->pool),
+        "vkCreateCommandPool(frame)");
+
+    if (result != RN_OK)
+      return result;
+
+    const VkCommandBufferAllocateInfo command_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = frame->pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    result = _result(ctx, vkAllocateCommandBuffers(ctx->device, &command_info,
+                                                   &frame->command),
+                     "vkAllocateCommandBuffers(frame)");
+
+    if (result != RN_OK)
+      return result;
+
+    if (ctx->mode == RN_VK_TARGET_MANAGED) {
+      result = _result(ctx, vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
+                                              &frame->image_available),
+                       "vkCreateSemaphore(image available)");
+
+      if (result != RN_OK)
+        return result;
+    }
+
+    result = _result(ctx, vkCreateFence(ctx->device, &fence_info, NULL,
+                                        &frame->fence),
+                     "vkCreateFence(frame)");
+
+    if (result != RN_OK)
+      return result;
+  }
+
+  return RN_OK;
 }
 
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
@@ -1061,9 +1129,11 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
       (ctx->mode == RN_VK_TARGET_MANAGED && !surface) || !width || !height)
     return RN_ERROR_BAD_STATE;
 
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+
   rn_result_t result = _result(
       ctx,
-      vkWaitForFences(ctx->device, 1, &ctx->frame_fence, VK_TRUE, UINT64_MAX),
+      vkWaitForFences(ctx->device, 1, &frame->fence, VK_TRUE, UINT64_MAX),
       "vkWaitForFences(frame)");
 
   if (result != RN_OK)
@@ -1108,7 +1178,7 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
     for (uint32_t attempt = 0; attempt < 2; ++attempt) {
       status = vkAcquireNextImageKHR(ctx->device, surface->swapchain,
-                                     UINT64_MAX, ctx->image_available,
+                                     UINT64_MAX, frame->image_available,
                                      VK_NULL_HANDLE, &surface->image_index);
 
       if (status != VK_ERROR_OUT_OF_DATE_KHR)
@@ -1146,11 +1216,21 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
     if (!target)
       return RN_ERROR_BAD_STATE;
 
+    /* a borrowed target cannot be rendered again while its prior use is pending */
+    if (target->render_fence && target->render_fence != frame->fence) {
+      result = _result(ctx, vkWaitForFences(ctx->device, 1, &target->render_fence,
+                                            VK_TRUE, UINT64_MAX),
+                       "vkWaitForFences(external target)");
+
+      if (result != RN_OK)
+        return result;
+    }
+
     framebuffer = target->framebuffer;
     extent = target->extent;
   }
 
-  result = _result(ctx, vkResetCommandPool(ctx->device, ctx->frame_pool, 0),
+  result = _result(ctx, vkResetCommandPool(ctx->device, frame->pool, 0),
                    "vkResetCommandPool(frame)");
 
   if (result != RN_OK)
@@ -1163,7 +1243,7 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
 
-  result = _result(ctx, vkBeginCommandBuffer(ctx->frame_command, &begin),
+  result = _result(ctx, vkBeginCommandBuffer(frame->command, &begin),
                    "vkBeginCommandBuffer(frame)");
 
   if (result != RN_OK)
@@ -1190,7 +1270,7 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
             },
     };
 
-    vkCmdPipelineBarrier(ctx->frame_command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdPipelineBarrier(frame->command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
                          NULL, 0, NULL, 1, &acquire);
   }
@@ -1204,9 +1284,9 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
       .renderArea = {{0, 0}, extent},
   };
 
-  vkCmdBeginRenderPass(ctx->frame_command, &pass, VK_SUBPASS_CONTENTS_INLINE);
+  vkCmdBeginRenderPass(frame->command, &pass, VK_SUBPASS_CONTENTS_INLINE);
 
-  ctx->command_buffer = ctx->frame_command;
+  ctx->command_buffer = frame->command;
   ctx->frame_extent = extent;
   ctx->frame_active = true;
   ctx->extent_x = x;
@@ -1241,8 +1321,8 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
       (float)x, (float)y, (float)width, (float)height, 0.0f, 1.0f,
   };
 
-  vkCmdSetViewport(ctx->frame_command, 0, 1, &viewport);
-  vkCmdSetScissor(ctx->frame_command, 0, 1, &scissor);
+  vkCmdSetViewport(frame->command, 0, 1, &viewport);
+  vkCmdSetScissor(frame->command, 0, 1, &scissor);
 
   return RN_OK;
 }
@@ -1298,11 +1378,14 @@ static rn_result_t _end_frame(void *backend_ctx) {
   if (!ctx || !ctx->frame_active)
     return RN_ERROR_BAD_STATE;
 
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+
+  struct rn_vk_external_target *target = NULL;
+
   vkCmdEndRenderPass(ctx->command_buffer);
 
   if (ctx->mode == RN_VK_TARGET_EXTERNAL) {
-    struct rn_vk_external_target *target =
-        _external_target(ctx, ctx->active_target);
+    target = _external_target(ctx, ctx->active_target);
 
     if (!target)
       return RN_ERROR_BAD_STATE;
@@ -1327,7 +1410,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
     };
 
     vkCmdPipelineBarrier(
-        ctx->frame_command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        frame->command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &release);
 
     target->used = true;
@@ -1344,7 +1427,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
     return result;
 
   /* reset the fences, in all modes */
-  result = _result(ctx, vkResetFences(ctx->device, 1, &ctx->frame_fence),
+  result = _result(ctx, vkResetFences(ctx->device, 1, &frame->fence),
                    "vkResetFences(frame)");
 
   if (result != RN_OK)
@@ -1361,24 +1444,28 @@ static rn_result_t _end_frame(void *backend_ctx) {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .waitSemaphoreCount = ctx->mode == RN_VK_TARGET_MANAGED ? 1u : 0u,
       .pWaitSemaphores =
-          ctx->mode == RN_VK_TARGET_MANAGED ? &ctx->image_available : NULL,
+          ctx->mode == RN_VK_TARGET_MANAGED ? &frame->image_available : NULL,
       .pWaitDstStageMask =
           ctx->mode == RN_VK_TARGET_MANAGED ? &wait_stage : NULL,
       .commandBufferCount = 1,
-      .pCommandBuffers = &ctx->frame_command,
+      .pCommandBuffers = &frame->command,
       .signalSemaphoreCount = ctx->mode == RN_VK_TARGET_MANAGED ? 1u : 0u,
       .pSignalSemaphores =
           ctx->mode == RN_VK_TARGET_MANAGED ? &render_done : NULL,
   };
 
-  VkResult status = vkQueueSubmit(ctx->queue, 1, &submit, ctx->frame_fence);
+  VkResult status = vkQueueSubmit(ctx->queue, 1, &submit, frame->fence);
 
   if (status != VK_SUCCESS) {
     ctx->fatal = true;
     return _result(ctx, status, "vkQueueSubmit(frame)");
   }
 
+  if (target)
+    target->render_fence = frame->fence;
+
   ctx->frame_submitted = true;
+  ctx->frame_index = (ctx->frame_index + 1) % RN_VK_FRAMES_IN_FLIGHT;
 
   if (ctx->mode == RN_VK_TARGET_EXTERNAL)
     return RN_OK;
@@ -1418,9 +1505,30 @@ static rn_result_t _create_buffer(void *backend_ctx,
     return RN_ERROR_OUT_OF_MEMORY;
   ctx->buffers = entries;
 
+  VkDeviceSize frame_stride = 0;
+  VkDeviceSize allocation_size = desc->size;
+
+  if (desc->usage == RN_BUFFER_DYNAMIC) {
+    VkDeviceSize alignment = ctx->properties.limits.nonCoherentAtomSize;
+
+    if (alignment < 4)
+      alignment = 4;
+
+    if (desc->size > SIZE_MAX - (alignment - 1))
+      return RN_ERROR_INVALID_ARGUMENT;
+
+    /* separate noncoherent flush ranges for slots that are still in use */
+    frame_stride = (desc->size + alignment - 1) & ~(alignment - 1);
+
+    if (frame_stride > SIZE_MAX / RN_VK_FRAMES_IN_FLIGHT)
+      return RN_ERROR_INVALID_ARGUMENT;
+
+    allocation_size = frame_stride * RN_VK_FRAMES_IN_FLIGHT;
+  }
+
   const VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-      .size = (VkDeviceSize)desc->size,
+      .size = allocation_size,
       .usage = (desc->target == RN_BUFFER_INDEX
                     ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT
                     : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) |
@@ -1428,17 +1536,24 @@ static rn_result_t _create_buffer(void *backend_ctx,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
 
-  const VmaAllocationCreateInfo alloc_info = {.usage =
-                                                  VMA_MEMORY_USAGE_CPU_TO_GPU};
+  const VmaAllocationCreateInfo alloc_info = {
+      .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+      .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+  };
 
   struct rn_vk_buffer buffer = {.size = (VkDeviceSize)desc->size,
+                                .frame_stride = frame_stride,
                                 .target = desc->target};
 
+  VmaAllocationInfo allocation_info;
   VkResult status = vmaCreateBuffer(ctx->vma, &buffer_info, &alloc_info,
-                                    &buffer.buffer, &buffer.allocation, NULL);
+                                    &buffer.buffer, &buffer.allocation,
+                                    &allocation_info);
 
   if (status != VK_SUCCESS)
     return _result(ctx, status, "vmaCreateBuffer");
+
+  buffer.mapped = allocation_info.pMappedData;
   buffer.alive = true;
 
   const rn_buffer_handle_t handle = (rn_buffer_handle_t)ctx->buffer_count;
@@ -1499,15 +1614,31 @@ static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
   if (!size)
     return RN_OK;
 
-  void *mapped = NULL;
-  VkResult status = vmaMapMemory(ctx->vma, buffer->allocation, &mapped);
+  /* writes outside a frame initialize every region after pending readers finish */
+  if (ctx->frame_submitted && (!buffer->frame_stride || !ctx->frame_active)) {
+    rn_result_t result = _result(ctx, vkDeviceWaitIdle(ctx->device),
+                                 "vkDeviceWaitIdle(buffer write)");
 
-  if (status != VK_SUCCESS)
-    return _result(ctx, status, "vmaMapMemory(buffer)");
-  memcpy((unsigned char *)mapped + offset, data, size);
-  status = vmaFlushAllocation(ctx->vma, buffer->allocation, offset, size);
-  vmaUnmapMemory(ctx->vma, buffer->allocation);
-  return _result(ctx, status, "vmaFlushAllocation(buffer)");
+    if (result != RN_OK)
+      return result;
+  }
+
+  uint32_t first = buffer->frame_stride && ctx->frame_active ? ctx->frame_index : 0;
+
+  uint32_t count = buffer->frame_stride && !ctx->frame_active
+                       ? RN_VK_FRAMES_IN_FLIGHT : 1;
+
+  for (uint32_t i = first; i < first + count; ++i) {
+    VkDeviceSize write_offset = buffer->frame_stride * i + offset;
+    memcpy((unsigned char *)buffer->mapped + write_offset, data, size);
+    VkResult status = vmaFlushAllocation(ctx->vma, buffer->allocation,
+                                         write_offset, size);
+
+    if (status != VK_SUCCESS)
+      return _result(ctx, status, "vmaFlushAllocation(buffer)");
+  }
+
+  return RN_OK;
 }
 
 static rn_result_t _set_vertex_buffer(void *backend_ctx,
@@ -1522,7 +1653,7 @@ static rn_result_t _set_vertex_buffer(void *backend_ctx,
   if (!buffer || buffer->target != RN_BUFFER_VERTEX)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  const VkDeviceSize offset = 0;
+  const VkDeviceSize offset = buffer->frame_stride * ctx->frame_index;
   vkCmdBindVertexBuffers(ctx->command_buffer, binding, 1, &buffer->buffer,
                          &offset);
   ctx->vertex_buffers[binding] = handle;
@@ -1539,7 +1670,8 @@ static rn_result_t _set_index_buffer(void *backend_ctx,
 
   if (!buffer || buffer->target != RN_BUFFER_INDEX)
     return RN_ERROR_INVALID_ARGUMENT;
-  vkCmdBindIndexBuffer(ctx->command_buffer, buffer->buffer, 0,
+  vkCmdBindIndexBuffer(ctx->command_buffer, buffer->buffer,
+                       buffer->frame_stride * ctx->frame_index,
                        VK_INDEX_TYPE_UINT32);
   ctx->index_buffer = handle;
   return RN_OK;
@@ -2664,14 +2796,8 @@ failed:
   if (ctx->vma)
     vmaDestroyAllocator(ctx->vma);
 
-  if (ctx->device && ctx->frame_fence)
-    vkDestroyFence(ctx->device, ctx->frame_fence, NULL);
-
-  if (ctx->device && ctx->image_available)
-    vkDestroySemaphore(ctx->device, ctx->image_available, NULL);
-
-  if (ctx->device && ctx->frame_pool)
-    vkDestroyCommandPool(ctx->device, ctx->frame_pool, NULL);
+  if (ctx->device)
+    _destroy_frame_commands(ctx);
 
   if (ctx->device) {
     _destroy_external_targets(ctx);
@@ -2733,14 +2859,7 @@ void rn_vk_backend_fini(struct rn_backend_impl_t *backend,
   if (ctx->vma)
     vmaDestroyAllocator(ctx->vma);
 
-  if (ctx->frame_fence)
-    vkDestroyFence(ctx->device, ctx->frame_fence, NULL);
-
-  if (ctx->image_available)
-    vkDestroySemaphore(ctx->device, ctx->image_available, NULL);
-
-  if (ctx->frame_pool)
-    vkDestroyCommandPool(ctx->device, ctx->frame_pool, NULL);
+  _destroy_frame_commands(ctx);
 
   while (ctx->surfaces) {
     ctx->current_surface = ctx->surfaces;
@@ -2996,15 +3115,18 @@ rn_result_t rn_vk_target_set(struct rn_state_t *state,
 rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
   struct rn_vk_context *ctx = _state_context(state);
 
-  if (!ctx || ctx->frame_active)
+  if (!ctx || ctx->frame_active || ctx->fatal)
     return RN_ERROR_BAD_STATE;
 
   if (!ctx->frame_submitted)
     return RN_OK;
 
+  uint32_t last = (ctx->frame_index + RN_VK_FRAMES_IN_FLIGHT - 1) %
+                  RN_VK_FRAMES_IN_FLIGHT;
+
   return _result(
       ctx,
-      vkWaitForFences(ctx->device, 1, &ctx->frame_fence, VK_TRUE, UINT64_MAX),
+      vkWaitForFences(ctx->device, 1, &ctx->frames[last].fence, VK_TRUE, UINT64_MAX),
       "vkWaitForFences(render complete)");
 }
 
