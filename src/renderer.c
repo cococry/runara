@@ -107,7 +107,8 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
     if (last->pipeline == pipeline) {
       /* merge batches by pipeline */
 
-      if (pipeline == renderer->atlas_pipeline) {
+      if ((pipeline == renderer->atlas_pipeline ||
+           pipeline == renderer->atlas_premultiplied_pipeline)) {
         /* atlas instances all share the same texture, so we can just merge */
         batch = last;
 
@@ -147,7 +148,8 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
         .first_instance = renderer->instance_count,
     };
 
-    if (pipeline == renderer->dedicated_pipeline) {
+    if ((pipeline == renderer->dedicated_pipeline ||
+         pipeline == renderer->dedicated_premultiplied_pipeline)) {
       batch->textures[0] = texture;
       batch->texture_count = 1;
 
@@ -161,7 +163,8 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
 
   /* params.x selects the sampler2D slot for dedicated images. */
 
-  if (pipeline == renderer->dedicated_pipeline)
+  if ((pipeline == renderer->dedicated_pipeline ||
+       pipeline == renderer->dedicated_premultiplied_pipeline))
     queued.params[0] = (float)texture_slot;
 
   renderer->instances[renderer->instance_count++] = queued;
@@ -228,6 +231,8 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   renderer->instance_buffer = RN_INVALID_HANDLE;
   renderer->atlas_pipeline = RN_INVALID_HANDLE;
   renderer->dedicated_pipeline = RN_INVALID_HANDLE;
+  renderer->atlas_premultiplied_pipeline = RN_INVALID_HANDLE;
+  renderer->dedicated_premultiplied_pipeline = RN_INVALID_HANDLE;
   renderer->atlas_texture = RN_INVALID_HANDLE;
 
   renderer->instances = allocator->alloc(
@@ -349,6 +354,23 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   if (result != RN_OK)
     goto failed;
 
+  struct rn_pipeline_desc_t premultiplied = atlas_desc;
+  premultiplied.blend = RN_BLEND_PREMULTIPLIED_ALPHA;
+  result = backend->create_pipeline(backend->ctx, &premultiplied,
+                                    &renderer->atlas_premultiplied_pipeline);
+
+  if (result != RN_OK)
+    goto failed;
+
+  premultiplied = dedicated_desc;
+  premultiplied.blend = RN_BLEND_PREMULTIPLIED_ALPHA;
+  result =
+      backend->create_pipeline(backend->ctx, &premultiplied,
+                               &renderer->dedicated_premultiplied_pipeline);
+
+  if (result != RN_OK)
+    goto failed;
+
   RN_TRACE(
       state->log,
       "created atlas and dedicated-texture pipelines (atlas=%u, dedicated=%u)",
@@ -444,6 +466,13 @@ void rn_renderer_fini(struct rn_state_t *state) {
     backend->destroy_texture(backend->ctx, renderer->atlas_texture);
 
   if (backend->destroy_pipeline) {
+    if (renderer->atlas_premultiplied_pipeline != RN_INVALID_HANDLE)
+      backend->destroy_pipeline(backend->ctx,
+                                renderer->atlas_premultiplied_pipeline);
+
+    if (renderer->dedicated_premultiplied_pipeline != RN_INVALID_HANDLE)
+      backend->destroy_pipeline(backend->ctx,
+                                renderer->dedicated_premultiplied_pipeline);
 
     if (renderer->atlas_pipeline != RN_INVALID_HANDLE)
       backend->destroy_pipeline(backend->ctx, renderer->atlas_pipeline);
@@ -584,9 +613,20 @@ rn_result_t rn_draw_texture(struct rn_state_t *state,
       .params = {0.0f, 0.0f, (float)image->layer, 2.0f},
   };
 
+  if (image->premultiplied) {
+    instance.color[0] *= tint.a;
+    instance.color[1] *= tint.a;
+    instance.color[2] *= tint.a;
+  }
+
   rn_pipeline_handle_t pipeline = image->storage == RN_IMAGE_ATLAS
                                       ? renderer->atlas_pipeline
                                       : renderer->dedicated_pipeline;
+
+  if (image->premultiplied)
+    pipeline = image->storage == RN_IMAGE_ATLAS
+                   ? renderer->atlas_premultiplied_pipeline
+                   : renderer->dedicated_premultiplied_pipeline;
 
   return _submit_instance(state, &instance, pipeline, image->texture);
 }
@@ -694,6 +734,50 @@ rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
   };
 
   return RN_OK;
+}
+
+rn_result_t rn_image_update(struct rn_state_t         *state,
+                            const struct rn_image_t   *image,
+                            const struct rn_box_u32_t *region, const void *rgba,
+                            size_t byte_count) {
+  if (!state || !image || !rgba || !image->width || !image->height)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  if (!state->renderer.initialized || state->renderer.frame_active)
+    return RN_ERROR_BAD_STATE;
+
+  struct rn_box_u32_t box =
+      region ? *region
+             : (struct rn_box_u32_t){0, 0, image->width, image->height};
+
+  if (!box.width || !box.height || box.x > image->width ||
+      box.y > image->height || box.width > image->width - box.x ||
+      box.height > image->height - box.y ||
+      !_valid_pixels(box.width, box.height, byte_count))
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct rn_texture_array_write_t write = {
+      .texture = image->texture,
+      .x = box.x,
+      .y = box.y,
+      .width = box.width,
+      .height = box.height,
+      .layer = image->layer,
+  };
+  struct rn_backend_impl_t *backend = &state->backend;
+
+  if (image->storage == RN_IMAGE_ATLAS) {
+    write.x += (uint32_t)(image->uv[0] * RN_RENDERER_ATLAS_WIDTH + 0.5f);
+    write.y += (uint32_t)(image->uv[1] * RN_RENDERER_ATLAS_HEIGHT + 0.5f);
+    return backend->write_texture_array_layer(backend->ctx, &write, rgba,
+                                              byte_count);
+  }
+
+  if (image->storage != RN_IMAGE_DEDICATED || !backend->write_texture)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  write.layer = 0;
+  return backend->write_texture(backend->ctx, &write, rgba, byte_count);
 }
 
 rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,

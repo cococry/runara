@@ -194,6 +194,10 @@ struct rn_backend_impl_t {
       void *ctx, const struct rn_texture_array_write_t *write,
       const void *rgba_pixels, size_t size);
 
+  rn_result_t (*write_texture)(void                                  *ctx,
+                               const struct rn_texture_array_write_t *write,
+                               const void *rgba_pixels, size_t size);
+
   void (*destroy_texture)(void *ctx, rn_texture_handle_t texture);
 
   rn_result_t (*set_texture)(void *ctx, uint32_t slot,

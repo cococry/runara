@@ -166,6 +166,10 @@ _write_texture_array_layer(void *backend_ctx,
                            const struct rn_texture_array_write_t *write,
                            const void *rgba_pixels, size_t size);
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle);
+static rn_result_t _write_texture(void *backend_ctx,
+                                  const struct rn_texture_array_write_t *write,
+                                  const void *rgba_pixels, size_t size);
+
 static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
                                 rn_texture_handle_t handle);
 
@@ -187,6 +191,7 @@ static const struct rn_backend_impl_t _rn_gl_dispatch = {
     .create_texture = _create_texture,
     .create_texture_array = _create_texture_array,
     .write_texture_array_layer = _write_texture_array_layer,
+    .write_texture = _write_texture,
     .destroy_texture = _destroy_texture,
     .set_texture = _set_texture,
 };
@@ -1115,13 +1120,57 @@ _write_texture_array_layer(void *backend_ctx,
   if (size < (size_t)required_bytes)
     return RN_ERROR_INVALID_ARGUMENT;
 
+  GLint binding, alignment, row_length;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &binding);
+  glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+  glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
   glBindTexture(GL_TEXTURE_2D_ARRAY, gpu_texture->gl_id);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
   glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, (GLint)write->x, (GLint)write->y,
                   (GLint)write->layer, (GLsizei)write->width,
                   (GLsizei)write->height, 1, GL_RGBA, GL_UNSIGNED_BYTE,
                   rgba_pixels);
-  return _gl_check(ctx->log, __func__);
+  rn_result_t result = _gl_check(ctx->log, __func__);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, binding);
+  return result;
+}
+
+static rn_result_t _write_texture(void *backend_ctx,
+                                  const struct rn_texture_array_write_t *write,
+                                  const void *rgba_pixels, size_t size) {
+  struct rn_gl_context *ctx = backend_ctx;
+
+  if (!ctx || !write || !rgba_pixels)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct rn_gl_texture *texture = _texture(ctx, write->texture);
+
+  if (!texture || texture->borrowed || texture->target != GL_TEXTURE_2D ||
+      !write->width || !write->height || write->layer ||
+      write->x > texture->width || write->y > texture->height ||
+      write->width > texture->width - write->x ||
+      write->height > texture->height - write->y ||
+      (uint64_t)write->width * write->height > SIZE_MAX / 4u ||
+      size < (size_t)write->width * write->height * 4u)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  GLint binding, alignment, row_length;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+  glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+  glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+  glBindTexture(GL_TEXTURE_2D, texture->gl_id);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, write->x, write->y, write->width,
+                  write->height, GL_RGBA, GL_UNSIGNED_BYTE, rgba_pixels);
+  rn_result_t result = _gl_check(ctx->log, __func__);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+  glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+  glBindTexture(GL_TEXTURE_2D, binding);
+  return result;
 }
 
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {

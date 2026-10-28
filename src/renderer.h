@@ -60,6 +60,8 @@ struct rn_renderer_t {
   rn_buffer_handle_t instance_buffer;
   rn_pipeline_handle_t atlas_pipeline;
   rn_pipeline_handle_t dedicated_pipeline;
+  rn_pipeline_handle_t atlas_premultiplied_pipeline;
+  rn_pipeline_handle_t dedicated_premultiplied_pipeline;
   rn_texture_handle_t atlas_texture;
 
   struct rn_quad_instance_t *instances;

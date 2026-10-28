@@ -20,6 +20,8 @@
  * SOFTWARE.
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "src/backend.h"
 #include "runara/runara.h"
 #include "runara/vulkan.h"
@@ -75,6 +77,11 @@ struct rn_vk_texture {
   bool array;
   bool borrowed;
   bool alive;
+  bool                       dmabuf, acquired;
+  VkDeviceMemory             dmabuf_memory;
+  int                        dmabuf_fd;
+  uint64_t                   dmabuf_device, dmabuf_inode;
+  struct rn_vk_dmabuf_desc_t dmabuf_desc;
 };
 
 struct rn_vk_descriptor_page {
@@ -90,12 +97,17 @@ struct rn_vk_descriptor_entry {
   struct rn_vk_descriptor_entry *next;
 };
 
+struct rn_vk_descriptor_cache {
+  struct rn_vk_descriptor_page *pages;
+  struct rn_vk_descriptor_entry *entries;
+  struct rn_vk_descriptor_entry *unused;
+};
+
 struct rn_vk_pipeline {
   VkPipeline pipeline;
   VkPipelineLayout layout;
   VkDescriptorSetLayout set_layout;
-  struct rn_vk_descriptor_page *pages;
-  struct rn_vk_descriptor_entry *descriptors;
+  struct rn_vk_descriptor_cache descriptors[RN_VK_FRAMES_IN_FLIGHT];
   enum rn_shader_pipeline_t shader;
   uint32_t descriptor_count;
   uint32_t strides[RN_VK_MAX_BINDINGS];
@@ -173,6 +185,18 @@ struct rn_vk_context {
   VkCommandBuffer upload_command;
   VkFence upload_fence;
   VmaAllocator vma;
+  VkBuffer                                    staging;
+  VmaAllocation                               staging_allocation;
+  void                                       *staging_map;
+  size_t                                      staging_capacity;
+  bool                                        dmabuf_enabled;
+  struct rn_vk_dmabuf_format_t               *dmabuf_formats;
+  size_t                                      dmabuf_format_count;
+  rn_texture_handle_t                        *acquired_images;
+  size_t                                      acquired_count, acquired_capacity;
+  PFN_vkGetPhysicalDeviceFormatProperties2KHR format_properties;
+  PFN_vkGetPhysicalDeviceImageFormatProperties2KHR image_properties;
+  PFN_vkGetMemoryFdPropertiesKHR                   fd_properties;
   VkPhysicalDeviceProperties properties;
 
   struct rn_vk_buffer *buffers;
@@ -196,6 +220,19 @@ struct rn_vk_context {
   const char *frag_atlas;
   const char *vert_src;
 };
+
+static rn_result_t _dmabuf_init(struct rn_vk_context *ctx);
+static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx);
+static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
+                                           struct rn_vk_texture *texture);
+static void        _dmabuf_release_commands(struct rn_vk_context *ctx,
+                                            VkCommandBuffer       command);
+static void        _dmabuf_forget(struct rn_vk_context *ctx,
+                                  rn_texture_handle_t   handle);
+static void        _dmabuf_close(struct rn_vk_texture *texture);
+static rn_result_t _write_texture(void *backend_ctx,
+                                  const struct rn_texture_array_write_t *write,
+                                  const void *pixels, size_t size);
 
 static rn_result_t _result(struct rn_vk_context *ctx, VkResult status,
                            const char *op);
@@ -302,6 +339,7 @@ static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .create_texture = _create_texture,
     .create_texture_array = _create_texture_array,
     .write_texture_array_layer = _write_texture_array_layer,
+    .write_texture = _write_texture,
     .destroy_texture = _destroy_texture,
     .set_texture = _set_texture,
 };
@@ -341,6 +379,23 @@ static struct rn_vk_texture *_texture(struct rn_vk_context *ctx,
              : NULL;
 }
 
+static rn_texture_handle_t _texture_slot(struct rn_vk_context *ctx) {
+  for (size_t i = 0; i < ctx->texture_count; ++i) {
+    if (!ctx->textures[i].alive)
+      return (rn_texture_handle_t)i;
+  }
+
+  struct rn_vk_texture *textures =
+      _grow(ctx, ctx->textures, ctx->texture_count, sizeof(*textures));
+
+  if (!textures)
+    return RN_INVALID_HANDLE;
+
+  ctx->textures = textures;
+  memset(&textures[ctx->texture_count], 0, sizeof(*textures));
+  return (rn_texture_handle_t)ctx->texture_count++;
+}
+
 static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
                                         rn_pipeline_handle_t handle) {
   return handle < ctx->pipeline_count && ctx->pipelines[handle].alive
@@ -366,6 +421,15 @@ static rn_result_t _create_instance(struct rn_vk_context *ctx) {
   if (ctx->mode == RN_VK_TARGET_MANAGED)
     extensions[extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 
+#ifdef __linux__
+  if (ctx->config.enable_dmabuf_import) {
+    extensions[extension_count++] =
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
+    extensions[extension_count++] =
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME;
+  }
+#endif
+
   for (uint32_t i = 0; i < count; ++i) {
 
     if (!required[i])
@@ -381,8 +445,12 @@ static rn_result_t _create_instance(struct rn_vk_context *ctx) {
       }
     }
 
-    if (!found)
+    if (!found) {
+      if (extension_count == sizeof(extensions) / sizeof(extensions[0]))
+        return RN_ERROR_INVALID_ARGUMENT;
+
       extensions[extension_count++] = required[i];
+    }
   }
 
   const VkApplicationInfo app = {
@@ -602,6 +670,44 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
     return RN_ERROR_BACKEND;
   }
 
+#ifdef __linux__
+  static const char *const dmabuf_extensions[] = {
+      VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+      VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+      VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+      VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+      VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+      VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
+      VK_KHR_MAINTENANCE_1_EXTENSION_NAME,
+      VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+      VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+      VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+      VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+  };
+  const uint32_t dmabuf_extension_count =
+      sizeof(dmabuf_extensions) / sizeof(dmabuf_extensions[0]);
+
+  if (ctx->config.enable_dmabuf_import &&
+      _has_device_extensions(ctx, ctx->physical_device, dmabuf_extensions,
+                             dmabuf_extension_count)) {
+    for (uint32_t i = 0; i < dmabuf_extension_count; ++i) {
+      bool found = false;
+
+      for (uint32_t j = 0; j < extension_count; ++j)
+        found |= strcmp(extensions[j], dmabuf_extensions[i]) == 0;
+
+      if (!found) {
+        if (extension_count == sizeof(extensions) / sizeof(extensions[0]))
+          return RN_ERROR_INVALID_ARGUMENT;
+
+        extensions[extension_count++] = dmabuf_extensions[i];
+      }
+    }
+
+    ctx->dmabuf_enabled = true;
+  }
+#endif
+
   const float priority = 1.0f;
   VkDeviceQueueCreateInfo *queues = ctx->alloc->alloc(
       ctx->queue_family_count * sizeof(*queues), ctx->alloc->ctx);
@@ -797,7 +903,8 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
     if (status != VK_SUCCESS)
       return _result(ctx, status, "vkGetPhysicalDeviceSurfacePresentModesKHR");
 
-    if (present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR) {
+    if (present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR &&
+        !surface->impl.allow_vsync_fallback) {
       _VK_ERROR(ctx->log,
                 "surface does not support presentation without vsync");
       return RN_ERROR_BACKEND;
@@ -1142,6 +1249,15 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
   if (result != RN_OK)
     return result;
 
+  /* reuse descriptor storage only after the frame slot's fence has signaled */
+  for (size_t i = 0; i < ctx->pipeline_count; ++i) {
+    if (ctx->pipelines[i].alive) {
+      struct rn_vk_descriptor_cache *cache =
+          &ctx->pipelines[i].descriptors[ctx->frame_index];
+      cache->unused = cache->entries;
+    }
+  }
+
   VkFramebuffer framebuffer = VK_NULL_HANDLE;
 
   VkExtent2D extent = {0};
@@ -1388,6 +1504,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
   struct rn_vk_external_target *target = NULL;
 
   vkCmdEndRenderPass(ctx->command_buffer);
+  _dmabuf_release_commands(ctx, ctx->command_buffer);
 
   if (ctx->mode == RN_VK_TARGET_EXTERNAL) {
     target = _external_target(ctx, ctx->active_target);
@@ -1469,6 +1586,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
   if (target)
     target->render_fence = frame->fence;
 
+  ctx->acquired_count = 0;
   ctx->frame_submitted = true;
   ctx->frame_index = (ctx->frame_index + 1) % RN_VK_FRAMES_IN_FLIGHT;
 
@@ -2004,21 +2122,25 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
 
   if (!ctx->tearing_down)
     vkDeviceWaitIdle(ctx->device);
-  struct rn_vk_descriptor_entry *entry = pipeline->descriptors;
 
-  while (entry) {
-    struct rn_vk_descriptor_entry *next = entry->next;
-    ctx->alloc->free(entry, ctx->alloc->ctx);
-    entry = next;
-  }
+  for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
+    struct rn_vk_descriptor_cache *cache = &pipeline->descriptors[i];
+    struct rn_vk_descriptor_entry *entry = cache->entries;
 
-  struct rn_vk_descriptor_page *page = pipeline->pages;
+    while (entry) {
+      struct rn_vk_descriptor_entry *next = entry->next;
+      ctx->alloc->free(entry, ctx->alloc->ctx);
+      entry = next;
+    }
 
-  while (page) {
-    struct rn_vk_descriptor_page *next = page->next;
-    vkDestroyDescriptorPool(ctx->device, page->pool, NULL);
-    ctx->alloc->free(page, ctx->alloc->ctx);
-    page = next;
+    struct rn_vk_descriptor_page *page = cache->pages;
+
+    while (page) {
+      struct rn_vk_descriptor_page *next = page->next;
+      vkDestroyDescriptorPool(ctx->device, page->pool, NULL);
+      ctx->alloc->free(page, ctx->alloc->ctx);
+      page = next;
+    }
   }
 
   vkDestroyPipeline(ctx->device, pipeline->pipeline, NULL);
@@ -2082,6 +2204,9 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
        (!texture->array || slot != 0)) ||
       (pipeline->shader == RN_PIPELINE_UI_QUAD_DEDICATED && texture->array))
     return RN_ERROR_INVALID_ARGUMENT;
+  if (texture->dmabuf && !texture->acquired)
+    return RN_ERROR_BAD_STATE;
+
   ctx->bound_textures[slot] = handle;
   return RN_OK;
 }
@@ -2089,6 +2214,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
                                         struct rn_vk_pipeline *pipeline,
                                         VkDescriptorSet *out) {
+  struct rn_vk_descriptor_cache *cache = &pipeline->descriptors[ctx->frame_index];
   const uint32_t count = pipeline->descriptor_count;
   rn_texture_handle_t textures[RN_VK_MAX_TEXTURES];
   rn_texture_handle_t fallback = ctx->bound_textures[0];
@@ -2101,7 +2227,9 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
     textures[slot] = _texture(ctx, handle) ? handle : fallback;
   }
 
-  for (struct rn_vk_descriptor_entry *entry = pipeline->descriptors; entry;
+  /* entries before unused belong to this frame. keep their sets unchanged
+   * because earlier draws may still reference them */
+  for (struct rn_vk_descriptor_entry *entry = cache->entries; entry != cache->unused;
        entry = entry->next) {
 
     if (entry->count == count &&
@@ -2112,16 +2240,20 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
     }
   }
 
-  struct rn_vk_descriptor_entry *entry =
-      ctx->alloc->alloc(sizeof(*entry), ctx->alloc->ctx);
+  struct rn_vk_descriptor_entry *entry = cache->unused;
+
+  if (entry) {
+    cache->unused = entry->next;
+    goto update;
+  }
+
+  entry = ctx->alloc->alloc(sizeof(*entry), ctx->alloc->ctx);
 
   if (!entry)
     return RN_ERROR_OUT_OF_MEMORY;
   memset(entry, 0, sizeof(*entry));
-  entry->count = count;
-  memcpy(entry->textures, textures, count * sizeof(*textures));
 
-  struct rn_vk_descriptor_page *page = pipeline->pages;
+  struct rn_vk_descriptor_page *page = cache->pages;
 
   if (!page || page->used == RN_VK_DESCRIPTOR_PAGE_SIZE) {
     struct rn_vk_descriptor_page *new_page =
@@ -2155,8 +2287,8 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
       return _result(ctx, status, "vkCreateDescriptorPool");
     }
 
-    new_page->next = pipeline->pages;
-    pipeline->pages = new_page;
+    new_page->next = cache->pages;
+    cache->pages = new_page;
     page = new_page;
     _VK_TRACE(ctx->log,
               "created descriptor page (%u sets, %u textures per set)",
@@ -2180,6 +2312,12 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
 
   ++page->used;
 
+  entry->next = cache->entries;
+  cache->entries = entry;
+
+update:
+  entry->count = count;
+  memcpy(entry->textures, textures, count * sizeof(*textures));
   VkDescriptorImageInfo images[RN_VK_MAX_TEXTURES] = {0};
 
   for (uint32_t slot = 0; slot < count; ++slot) {
@@ -2202,8 +2340,6 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
   };
 
   vkUpdateDescriptorSets(ctx->device, 1, &write, 0, NULL);
-  entry->next = pipeline->descriptors;
-  pipeline->descriptors = entry;
   *out = entry->set;
   return RN_OK;
 }
@@ -2426,37 +2562,44 @@ static rn_result_t _upload_image(struct rn_vk_context *ctx,
 
   const size_t transfer_size = (size_t)width * height * 4u;
 
-  const VkBufferCreateInfo buffer_info = {
-      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-      .size = transfer_size,
-      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-  };
+  /* uploads finish before returning, so the mapped staging buffer can be
+   * reused for the next image and only needs to grow for larger uploads */
+  if (transfer_size > ctx->staging_capacity) {
+    if (ctx->staging)
+      vmaDestroyBuffer(ctx->vma, ctx->staging, ctx->staging_allocation);
 
-  const VmaAllocationCreateInfo allocation_info = {
-      .usage = VMA_MEMORY_USAGE_CPU_TO_GPU};
+    ctx->staging = VK_NULL_HANDLE;
+    ctx->staging_allocation = NULL;
+    ctx->staging_map = NULL;
+    ctx->staging_capacity = 0;
+    const VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = transfer_size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    const VmaAllocationCreateInfo allocation_info = {
+        .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+    };
+    VmaAllocationInfo allocation;
+    VkResult          status =
+        vmaCreateBuffer(ctx->vma, &buffer_info, &allocation_info, &ctx->staging,
+                        &ctx->staging_allocation, &allocation);
 
-  VkBuffer staging = VK_NULL_HANDLE;
-  VmaAllocation allocation = NULL;
-  VkResult status = vmaCreateBuffer(ctx->vma, &buffer_info, &allocation_info,
-                                    &staging, &allocation, NULL);
+    if (status != VK_SUCCESS)
+      return _result(ctx, status, "vmaCreateBuffer(texture staging)");
+
+    ctx->staging_map = allocation.pMappedData;
+    ctx->staging_capacity = transfer_size;
+  }
+
+  memcpy(ctx->staging_map, pixels, transfer_size);
+  VkResult status =
+      vmaFlushAllocation(ctx->vma, ctx->staging_allocation, 0, transfer_size);
 
   if (status != VK_SUCCESS)
-    return _result(ctx, status, "vmaCreateBuffer(texture staging)");
-
-  void *mapped = NULL;
-  status = vmaMapMemory(ctx->vma, allocation, &mapped);
-
-  if (status == VK_SUCCESS) {
-    memcpy(mapped, pixels, transfer_size);
-    status = vmaFlushAllocation(ctx->vma, allocation, 0, transfer_size);
-    vmaUnmapMemory(ctx->vma, allocation);
-  }
-
-  if (status != VK_SUCCESS) {
-    vmaDestroyBuffer(ctx->vma, staging, allocation);
-    return _result(ctx, status, "map/flush(texture staging)");
-  }
+    return _result(ctx, status, "vmaFlushAllocation(texture staging)");
 
   rn_result_t result = _begin_upload(ctx);
 
@@ -2480,14 +2623,13 @@ static rn_result_t _upload_image(struct rn_vk_context *ctx,
         .imageExtent = {width, height, 1},
     };
 
-    vkCmdCopyBufferToImage(ctx->upload_command, staging, texture->image,
+    vkCmdCopyBufferToImage(ctx->upload_command, ctx->staging, texture->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     _image_barrier(ctx, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture->layers);
     result = _end_upload(ctx);
   }
 
-  vmaDestroyBuffer(ctx->vma, staging, allocation);
   return result;
 }
 
@@ -2504,12 +2646,10 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
                  size < (size_t)width * height * 4u))
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_vk_texture *entries =
-      _grow(ctx, ctx->textures, ctx->texture_count, sizeof(*entries));
+  rn_texture_handle_t handle = _texture_slot(ctx);
 
-  if (!entries)
+  if (handle == RN_INVALID_HANDLE)
     return RN_ERROR_OUT_OF_MEMORY;
-  ctx->textures = entries;
 
   struct rn_vk_texture texture = {
       .width = width,
@@ -2600,8 +2740,8 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
   }
 
   texture.alive = true;
-  *out = (rn_texture_handle_t)ctx->texture_count;
-  ctx->textures[ctx->texture_count++] = texture;
+  *out = handle;
+  ctx->textures[handle] = texture;
   _VK_TRACE(ctx->log, "created %s texture %u (%ux%u, %u layers)",
             array ? "array" : "dedicated", (unsigned)*out, width, height,
             layers);
@@ -2658,6 +2798,23 @@ _write_texture_array_layer(void *backend_ctx,
                        write->width, write->height, pixels, size);
 }
 
+static rn_result_t _write_texture(void *backend_ctx,
+                                  const struct rn_texture_array_write_t *write,
+                                  const void *pixels, size_t size) {
+  struct rn_vk_context *ctx = backend_ctx;
+
+  if (!ctx || !write)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct rn_vk_texture *texture = _texture(ctx, write->texture);
+
+  if (!texture || texture->borrowed || texture->array || write->layer)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  return _upload_image(ctx, texture, 0, write->x, write->y, write->width,
+                       write->height, pixels, size);
+}
+
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
   struct rn_vk_context *ctx = backend_ctx;
 
@@ -2673,13 +2830,24 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
     return;
   }
 
+  if (texture->dmabuf && texture->acquired)
+    _dmabuf_release_texture(ctx, texture);
+
+  _dmabuf_forget(ctx, handle);
+
   if (!ctx->tearing_down)
     vkDeviceWaitIdle(ctx->device);
+
   vkDestroySampler(ctx->device, texture->sampler, NULL);
   vkDestroyImageView(ctx->device, texture->view, NULL);
 
-  if (!texture->borrowed)
+  if (texture->dmabuf) {
+    vkDestroyImage(ctx->device, texture->image, NULL);
+    vkFreeMemory(ctx->device, texture->dmabuf_memory, NULL);
+    _dmabuf_close(texture);
+  } else if (!texture->borrowed) {
     vmaDestroyImage(ctx->vma, texture->image, texture->allocation);
+  }
   texture->alive = false;
   _VK_TRACE(ctx->log, "destroyed texture %u", (unsigned)handle);
 }
@@ -2780,6 +2948,9 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
               "vkCreateFence(upload)") != RN_OK)
     goto failed;
 
+  if (_dmabuf_init(ctx) != RN_OK)
+    goto failed;
+
   *impl = _rn_vk_dispatch;
   impl->ctx = ctx;
 
@@ -2800,6 +2971,9 @@ failed:
   if (ctx->device && ctx->upload_pool)
     vkDestroyCommandPool(ctx->device, ctx->upload_pool, NULL);
 
+  if (ctx->staging)
+    vmaDestroyBuffer(ctx->vma, ctx->staging, ctx->staging_allocation);
+
   if (ctx->vma)
     vmaDestroyAllocator(ctx->vma);
 
@@ -2818,6 +2992,8 @@ failed:
   if (ctx->instance)
     vkDestroyInstance(ctx->instance, NULL);
 
+  alloc->free(ctx->dmabuf_formats, alloc->ctx);
+  alloc->free(ctx->acquired_images, alloc->ctx);
   alloc->free(ctx, alloc->ctx);
   return false;
 }
@@ -2863,6 +3039,9 @@ void rn_vk_backend_fini(struct rn_backend_impl_t *backend,
   if (ctx->upload_pool)
     vkDestroyCommandPool(ctx->device, ctx->upload_pool, NULL);
 
+  if (ctx->staging)
+    vmaDestroyBuffer(ctx->vma, ctx->staging, ctx->staging_allocation);
+
   if (ctx->vma)
     vmaDestroyAllocator(ctx->vma);
 
@@ -2883,6 +3062,8 @@ void rn_vk_backend_fini(struct rn_backend_impl_t *backend,
   vkDestroyDevice(ctx->device, NULL);
   vkDestroyInstance(ctx->instance, NULL);
 
+  alloc->free(ctx->dmabuf_formats, alloc->ctx);
+  alloc->free(ctx->acquired_images, alloc->ctx);
   alloc->free(ctx->buffers, alloc->ctx);
   alloc->free(ctx->textures, alloc->ctx);
   alloc->free(ctx->pipelines, alloc->ctx);
@@ -3126,15 +3307,18 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
     return RN_ERROR_BAD_STATE;
 
   if (!ctx->frame_submitted)
-    return RN_OK;
+    return _dmabuf_release_pending(ctx);
 
   uint32_t last =
       (ctx->frame_index + RN_VK_FRAMES_IN_FLIGHT - 1) % RN_VK_FRAMES_IN_FLIGHT;
 
-  return _result(ctx,
-                 vkWaitForFences(ctx->device, 1, &ctx->frames[last].fence,
-                                 VK_TRUE, UINT64_MAX),
-                 "vkWaitForFences(render complete)");
+  rn_result_t result =
+      _result(ctx,
+              vkWaitForFences(ctx->device, 1, &ctx->frames[last].fence, VK_TRUE,
+                              UINT64_MAX),
+              "vkWaitForFences(render complete)");
+
+  return result == RN_OK ? _dmabuf_release_pending(ctx) : result;
 }
 
 rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
@@ -3165,22 +3349,18 @@ rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
   return RN_OK;
 }
 
-rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
-                                   VkFormat format, uint32_t width,
-                                   uint32_t height,
-                                   struct rn_image_t *out_image) {
-  struct rn_vk_context *ctx = _state_context(state);
+static rn_result_t _wrap_vk_image(struct rn_vk_context *ctx, VkImage image,
+                                  VkFormat format, uint32_t width,
+                                  uint32_t height, bool opaque,
+                                  struct rn_image_t *out_image) {
 
   if (!ctx || !out_image || !image || !width || !height || ctx->frame_active)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_vk_texture *textures =
-      _grow(ctx, ctx->textures, ctx->texture_count, sizeof(*textures));
+  rn_texture_handle_t handle = _texture_slot(ctx);
 
-  if (!textures)
+  if (handle == RN_INVALID_HANDLE)
     return RN_ERROR_OUT_OF_MEMORY;
-
-  ctx->textures = textures;
 
   struct rn_vk_texture texture = {0};
 
@@ -3195,6 +3375,8 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
       .image = image,
       .viewType = VK_IMAGE_VIEW_TYPE_2D,
       .format = format,
+      .components = {.a = opaque ? VK_COMPONENT_SWIZZLE_ONE
+                                 : VK_COMPONENT_SWIZZLE_IDENTITY},
       .subresourceRange =
           {
               .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3229,8 +3411,7 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
   }
 
   texture.alive = true;
-  rn_texture_handle_t handle = (rn_texture_handle_t)ctx->texture_count;
-  ctx->textures[ctx->texture_count++] = texture;
+  ctx->textures[handle] = texture;
 
   *out_image = (struct rn_image_t){
       .storage = RN_IMAGE_DEDICATED,
@@ -3241,5 +3422,606 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
       .uv = {0.0f, 0.0f, 1.0f, 1.0f},
   };
 
+  return RN_OK;
+}
+
+rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
+                                   VkFormat format, uint32_t width,
+                                   uint32_t           height,
+                                   struct rn_image_t *out_image) {
+  return _wrap_vk_image(_state_context(state), image, format, width, height,
+                        false, out_image);
+}
+
+#ifdef __linux__
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define RN_FOURCC(a, b, c, d)                                                  \
+  ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) |              \
+   ((uint32_t)(d) << 24))
+
+static const struct {
+  uint32_t drm;
+  VkFormat vk;
+  bool     opaque;
+} _dmabuf_rgb[] = {
+    {RN_FOURCC('A', 'R', '2', '4'), VK_FORMAT_B8G8R8A8_UNORM, false},
+    {RN_FOURCC('X', 'R', '2', '4'), VK_FORMAT_B8G8R8A8_UNORM, true},
+    {RN_FOURCC('A', 'B', '2', '4'), VK_FORMAT_R8G8B8A8_UNORM, false},
+    {RN_FOURCC('X', 'B', '2', '4'), VK_FORMAT_R8G8B8A8_UNORM, true},
+};
+
+static bool _dmabuf_importable(struct rn_vk_context *ctx, VkFormat format,
+                               uint64_t modifier) {
+  VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
+      .drmFormatModifier = modifier,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkPhysicalDeviceExternalImageFormatInfo external = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+      .pNext = &mod,
+      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+  };
+  VkPhysicalDeviceImageFormatInfo2 info = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+      .pNext = &external,
+      .format = format,
+      .type = VK_IMAGE_TYPE_2D,
+      .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+      .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+  };
+  VkExternalImageFormatProperties external_props = {
+      .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
+  };
+  VkImageFormatProperties2 props = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+      .pNext = &external_props,
+  };
+
+  return ctx->image_properties(ctx->physical_device, &info, &props) ==
+             VK_SUCCESS &&
+         (external_props.externalMemoryProperties.externalMemoryFeatures &
+          VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+}
+
+static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
+  if (!ctx->dmabuf_enabled)
+    return RN_OK;
+
+  ctx->format_properties =
+      (PFN_vkGetPhysicalDeviceFormatProperties2KHR)vkGetInstanceProcAddr(
+          ctx->instance, "vkGetPhysicalDeviceFormatProperties2KHR");
+  ctx->image_properties =
+      (PFN_vkGetPhysicalDeviceImageFormatProperties2KHR)vkGetInstanceProcAddr(
+          ctx->instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
+  ctx->fd_properties = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(
+      ctx->device, "vkGetMemoryFdPropertiesKHR");
+
+  if (!ctx->format_properties || !ctx->image_properties || !ctx->fd_properties)
+    return RN_ERROR_BACKEND;
+
+  for (size_t f = 0; f < sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]); ++f) {
+    VkDrmFormatModifierPropertiesListEXT list = {
+        .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+    };
+    VkFormatProperties2 props = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+                                 .pNext = &list};
+    ctx->format_properties(ctx->physical_device, _dmabuf_rgb[f].vk, &props);
+
+    if (!list.drmFormatModifierCount)
+      continue;
+
+    VkDrmFormatModifierPropertiesEXT *mods = ctx->alloc->alloc(
+        list.drmFormatModifierCount * sizeof(*mods), ctx->alloc->ctx);
+
+    if (!mods)
+      return RN_ERROR_OUT_OF_MEMORY;
+
+    list.pDrmFormatModifierProperties = mods;
+    ctx->format_properties(ctx->physical_device, _dmabuf_rgb[f].vk, &props);
+
+    for (uint32_t i = 0; i < list.drmFormatModifierCount; ++i) {
+      VkFormatFeatureFlags required =
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
+      if ((mods[i].drmFormatModifierTilingFeatures & required) != required ||
+          !mods[i].drmFormatModifierPlaneCount ||
+          mods[i].drmFormatModifierPlaneCount > RN_VK_DMABUF_MAX_PLANES ||
+          !_dmabuf_importable(ctx, _dmabuf_rgb[f].vk,
+                              mods[i].drmFormatModifier))
+        continue;
+
+      struct rn_vk_dmabuf_format_t *formats = ctx->alloc->realloc(
+          ctx->dmabuf_formats,
+          (ctx->dmabuf_format_count + 1) * sizeof(*formats), ctx->alloc->ctx);
+
+      if (!formats) {
+        ctx->alloc->free(mods, ctx->alloc->ctx);
+        return RN_ERROR_OUT_OF_MEMORY;
+      }
+
+      ctx->dmabuf_formats = formats;
+      formats[ctx->dmabuf_format_count++] = (struct rn_vk_dmabuf_format_t){
+          .format = _dmabuf_rgb[f].drm,
+          .modifier = mods[i].drmFormatModifier,
+          .plane_count = mods[i].drmFormatModifierPlaneCount,
+      };
+    }
+
+    ctx->alloc->free(mods, ctx->alloc->ctx);
+  }
+
+  return RN_OK;
+}
+
+static void _dmabuf_barrier(struct rn_vk_context *ctx,
+                            struct rn_vk_texture *texture,
+                            VkCommandBuffer command, bool acquire) {
+
+  /* transfer ownership between the external producer and our graphics queue.
+   * use general layout outside runara and shader read layout while sampling */
+  VkImageMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = acquire ? 0 : VK_ACCESS_SHADER_READ_BIT,
+      .dstAccessMask = acquire ? VK_ACCESS_SHADER_READ_BIT : 0,
+      .oldLayout = acquire ? VK_IMAGE_LAYOUT_GENERAL
+                           : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .newLayout = acquire ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                           : VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex =
+          acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT : ctx->queue_family,
+      .dstQueueFamilyIndex =
+          acquire ? ctx->queue_family : VK_QUEUE_FAMILY_FOREIGN_EXT,
+      .image = texture->image,
+      .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .levelCount = 1,
+                           .layerCount = 1},
+  };
+
+  vkCmdPipelineBarrier(command,
+                       acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                               : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       acquire ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                               : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                       0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+static void _dmabuf_release_commands(struct rn_vk_context *ctx,
+                                     VkCommandBuffer       command) {
+  for (size_t i = 0; i < ctx->acquired_count; ++i) {
+    struct rn_vk_texture *texture = _texture(ctx, ctx->acquired_images[i]);
+
+    if (texture && texture->acquired) {
+      _dmabuf_barrier(ctx, texture, command, false);
+      texture->acquired = false;
+    }
+  }
+}
+
+static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx) {
+  if (!ctx->acquired_count)
+    return RN_OK;
+
+  rn_result_t result = _begin_upload(ctx);
+
+  if (result != RN_OK)
+    return result;
+
+  _dmabuf_release_commands(ctx, ctx->upload_command);
+  result = _end_upload(ctx);
+
+  if (result == RN_OK)
+    ctx->acquired_count = 0;
+
+  return result;
+}
+
+static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
+                                           struct rn_vk_texture *texture) {
+  rn_result_t result = _begin_upload(ctx);
+
+  if (result != RN_OK)
+    return result;
+
+  _dmabuf_barrier(ctx, texture, ctx->upload_command, false);
+  result = _end_upload(ctx);
+
+  if (result == RN_OK)
+    texture->acquired = false;
+
+  return result;
+}
+
+static void _dmabuf_forget(struct rn_vk_context *ctx,
+                           rn_texture_handle_t   handle) {
+  for (size_t i = 0; i < ctx->acquired_count; ++i) {
+    if (ctx->acquired_images[i] == handle) {
+      ctx->acquired_images[i] = ctx->acquired_images[--ctx->acquired_count];
+      break;
+    }
+  }
+}
+
+static void _dmabuf_close(struct rn_vk_texture *texture) {
+  close(texture->dmabuf_fd);
+}
+
+static rn_result_t _dmabuf_wait(struct rn_vk_context *ctx, int fd) {
+  if (fd < 0)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct pollfd wait = {.fd = fd, .events = POLLIN};
+  int           result;
+
+  do {
+    result = poll(&wait, 1, -1);
+  } while (result < 0 && errno == EINTR);
+
+  if (result > 0 && (wait.revents & POLLIN))
+    return RN_OK;
+
+  _VK_ERROR(ctx->log, "failed to wait for dma-buf acquire fence");
+  return RN_ERROR_BACKEND;
+}
+
+static rn_result_t _dmabuf_acquire(struct rn_vk_context *ctx,
+                                   rn_texture_handle_t handle, int fence_fd) {
+  struct rn_vk_texture *texture = _texture(ctx, handle);
+  rn_result_t           result;
+
+  if (fence_fd >= 0) {
+    /* wait on the explict fence */
+    result = _dmabuf_wait(ctx, fence_fd);
+  } else {
+
+    /* without an explicit fence, wait for the buffer's pending writers through
+     * its implicit synchronization before reading it */
+    struct dma_buf_export_sync_file sync = {.flags = DMA_BUF_SYNC_READ,
+                                            .fd = -1};
+
+    if (ioctl(texture->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync) < 0) {
+      _VK_ERROR(ctx->log, "cannot export dma-buf acquire fence: %s",
+                strerror(errno));
+      return RN_ERROR_BACKEND;
+    }
+
+    result = _dmabuf_wait(ctx, sync.fd);
+    close(sync.fd);
+  }
+
+  if (result != RN_OK || texture->acquired)
+    return result;
+
+  if (ctx->acquired_count == ctx->acquired_capacity) {
+    size_t capacity = ctx->acquired_capacity ? ctx->acquired_capacity * 2 : 16;
+    rn_texture_handle_t *handles = ctx->alloc->realloc(
+        ctx->acquired_images, capacity * sizeof(*handles), ctx->alloc->ctx);
+
+    if (!handles)
+      return RN_ERROR_OUT_OF_MEMORY;
+
+    ctx->acquired_images = handles;
+    ctx->acquired_capacity = capacity;
+  }
+
+  result = _begin_upload(ctx);
+
+  if (result != RN_OK)
+    return result;
+
+  _dmabuf_barrier(ctx, texture, ctx->upload_command, true);
+  result = _end_upload(ctx);
+
+  if (result == RN_OK) {
+    texture->acquired = true;
+    ctx->acquired_images[ctx->acquired_count++] = handle;
+  }
+
+  return result;
+}
+
+/* creates a new rn_image_t from a dmabuf description */
+static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
+                                  const struct rn_vk_dmabuf_desc_t *desc,
+                                  const struct stat                *stat,
+                                  struct rn_image_t                *image) {
+
+  /* get dmabuf format (drm -> vk) from desciption format */
+  size_t f;
+  for (f = 0; f < sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]); ++f) {
+    if (_dmabuf_rgb[f].drm == desc->format)
+      break;
+  }
+
+  if (f == sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]))
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  VkSubresourceLayout planes[RN_VK_DMABUF_MAX_PLANES] = {0};
+
+  for (uint32_t i = 0; i < desc->plane_count; ++i) {
+    planes[i].offset = desc->planes[i].offset;
+    planes[i].rowPitch = desc->planes[i].stride;
+  }
+
+  VkImageDrmFormatModifierExplicitCreateInfoEXT modifier = {
+      .sType =
+          VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT,
+      .drmFormatModifier = desc->modifier,
+      .drmFormatModifierPlaneCount = desc->plane_count,
+      .pPlaneLayouts = planes,
+  };
+  VkExternalMemoryImageCreateInfo external = {
+      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+      .pNext = &modifier,
+      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+  };
+  VkImageCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .pNext = &external,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = _dmabuf_rgb[f].vk,
+      .extent = {desc->width, desc->height, 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+      .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  VkImage        native = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  rn_result_t    result =
+      _result(ctx, vkCreateImage(ctx->device, &info, NULL, &native),
+              "vkCreateImage(dmabuf)");
+
+  if (result != RN_OK)
+    return result;
+
+  VkMemoryRequirements requirements;
+  vkGetImageMemoryRequirements(ctx->device, native, &requirements);
+  VkMemoryFdPropertiesKHR properties = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+  result =
+      _result(ctx,
+              ctx->fd_properties(ctx->device,
+                                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+                                 desc->planes[0].fd, &properties),
+              "vkGetMemoryFdPropertiesKHR");
+
+  if (result != RN_OK)
+    goto fail;
+
+  uint32_t type = 0;
+  uint32_t bits = properties.memoryTypeBits & requirements.memoryTypeBits;
+
+  while (type < 32 && !(bits & (1u << type)))
+    ++type;
+
+  if (type == 32 || stat->st_size <= 0 ||
+      (uint64_t)stat->st_size < requirements.size) {
+    result = RN_ERROR_INVALID_ARGUMENT;
+    goto fail;
+  }
+
+  /* vulkan takes ownership of the imported fd on success. duplicate it so
+   * the caller keeps ownership of the original */
+  int fd = fcntl(desc->planes[0].fd, F_DUPFD_CLOEXEC, 0);
+
+  if (fd < 0) {
+    result = RN_ERROR_BACKEND;
+    goto fail;
+  }
+
+  VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = native,
+  };
+  VkImportMemoryFdInfoKHR import = {
+      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+      .pNext = &dedicated,
+      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+      .fd = fd,
+  };
+  VkMemoryAllocateInfo allocation = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = &import,
+      .allocationSize = stat->st_size,
+      .memoryTypeIndex = type,
+  };
+  result =
+      _result(ctx, vkAllocateMemory(ctx->device, &allocation, NULL, &memory),
+              "vkAllocateMemory(dmabuf)");
+
+  if (result != RN_OK) {
+    close(fd);
+    goto fail;
+  }
+
+  result = _result(ctx, vkBindImageMemory(ctx->device, native, memory, 0),
+                   "vkBindImageMemory(dmabuf)");
+
+  if (result != RN_OK)
+    goto fail;
+
+  /* keep a separate fd for later synchronization. the import fd now belongs
+   * to vulkan */
+  fd = fcntl(desc->planes[0].fd, F_DUPFD_CLOEXEC, 0);
+
+  if (fd < 0) {
+    result = RN_ERROR_BACKEND;
+    goto fail;
+  }
+
+  result = _wrap_vk_image(ctx, native, _dmabuf_rgb[f].vk, desc->width,
+                          desc->height, _dmabuf_rgb[f].opaque, image);
+
+  if (result != RN_OK) {
+    close(fd);
+    goto fail;
+  }
+
+  struct rn_vk_texture *texture = _texture(ctx, image->texture);
+  texture->dmabuf = true;
+  texture->dmabuf_memory = memory;
+  texture->dmabuf_fd = fd;
+  texture->dmabuf_device = stat->st_dev;
+  texture->dmabuf_inode = stat->st_ino;
+  texture->dmabuf_desc = *desc;
+  image->premultiplied = desc->premultiplied;
+  return RN_OK;
+
+fail:
+  vkDestroyImage(ctx->device, native, NULL);
+
+  if (memory)
+    vkFreeMemory(ctx->device, memory, NULL);
+
+  return result;
+}
+
+rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
+                                    const struct rn_vk_dmabuf_desc_t *desc,
+                                    struct rn_image_t                *image) {
+  struct rn_vk_context *ctx = _state_context(state);
+
+  if (!ctx || !desc || !image || !desc->width || !desc->height ||
+      desc->acquire_fence_fd < -1 || !desc->plane_count ||
+      desc->plane_count > RN_VK_DMABUF_MAX_PLANES ||
+      desc->width > ctx->properties.limits.maxImageDimension2D ||
+      desc->height > ctx->properties.limits.maxImageDimension2D)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  if (ctx->frame_active || ctx->fatal)
+    return RN_ERROR_BAD_STATE;
+
+  if (!ctx->dmabuf_enabled)
+    return RN_ERROR_BACKEND;
+
+  bool supported = false;
+
+  /* check if description format is supported */
+  for (size_t i = 0; i < ctx->dmabuf_format_count; ++i) {
+    const struct rn_vk_dmabuf_format_t *format = &ctx->dmabuf_formats[i];
+
+    if (format->format == desc->format && format->modifier == desc->modifier &&
+        format->plane_count == desc->plane_count) {
+      supported = true;
+      break;
+    }
+  }
+
+  if (!supported)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct stat stat;
+
+  if (fstat(desc->planes[0].fd, &stat) < 0)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  /* validate planes */
+  for (uint32_t i = 0; i < desc->plane_count; ++i) {
+    struct stat plane;
+
+    if (!desc->planes[i].stride || fstat(desc->planes[i].fd, &plane) < 0 ||
+        plane.st_dev != stat.st_dev || plane.st_ino != stat.st_ino)
+      return RN_ERROR_INVALID_ARGUMENT;
+  }
+
+  bool        created = !image->width && !image->height;
+  rn_result_t result;
+
+  if (created) {
+    result = _dmabuf_create(ctx, desc, &stat, image);
+
+    if (result != RN_OK)
+      return result;
+  } else {
+    struct rn_vk_texture *texture = _texture(ctx, image->texture);
+
+    if (!texture || !texture->dmabuf || image->storage != RN_IMAGE_DEDICATED ||
+        texture->dmabuf_device != (uint64_t)stat.st_dev ||
+        texture->dmabuf_inode != (uint64_t)stat.st_ino ||
+        texture->width != desc->width || texture->height != desc->height ||
+        texture->dmabuf_desc.format != desc->format ||
+        texture->dmabuf_desc.modifier != desc->modifier ||
+        texture->dmabuf_desc.plane_count != desc->plane_count)
+      return RN_ERROR_INVALID_ARGUMENT;
+
+    for (uint32_t i = 0; i < desc->plane_count; ++i) {
+      if (texture->dmabuf_desc.planes[i].offset != desc->planes[i].offset ||
+          texture->dmabuf_desc.planes[i].stride != desc->planes[i].stride)
+        return RN_ERROR_INVALID_ARGUMENT;
+    }
+  }
+
+  result = _dmabuf_acquire(ctx, image->texture, desc->acquire_fence_fd);
+
+  if (result != RN_OK && created) {
+    _destroy_texture(ctx, image->texture);
+    memset(image, 0, sizeof(*image));
+  }
+
+  if (result == RN_OK)
+    image->premultiplied = desc->premultiplied;
+
+  return result;
+}
+
+#else
+static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
+                                           struct rn_vk_texture *texture) {
+  (void)ctx;
+  (void)texture;
+  return RN_OK;
+}
+
+static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
+  (void)ctx;
+  return RN_OK;
+}
+static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx) {
+  (void)ctx;
+  return RN_OK;
+}
+static void _dmabuf_release_commands(struct rn_vk_context *ctx,
+                                     VkCommandBuffer       command) {
+  (void)ctx;
+  (void)command;
+}
+static void _dmabuf_forget(struct rn_vk_context *ctx,
+                           rn_texture_handle_t   handle) {
+  (void)ctx;
+  (void)handle;
+}
+static void _dmabuf_close(struct rn_vk_texture *texture) { (void)texture; }
+rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
+                                    const struct rn_vk_dmabuf_desc_t *desc,
+                                    struct rn_image_t                *image) {
+  (void)state;
+  (void)desc;
+  (void)image;
+  return RN_ERROR_BACKEND;
+}
+#endif
+
+rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
+                                 const struct rn_vk_dmabuf_format_t **formats,
+                                 size_t                              *count) {
+  struct rn_vk_context *ctx = _state_context(state);
+
+  if (!ctx || !formats || !count)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  *formats = ctx->dmabuf_formats;
+  *count = ctx->dmabuf_format_count;
   return RN_OK;
 }

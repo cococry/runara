@@ -148,6 +148,8 @@ struct rn_image_t {
   uint32_t layer;
   /* The uv coordinates of the image */
   float uv[4];
+  /* use premultiplied alpha blending for this image */
+  bool premultiplied;
 };
 
 typedef enum rn_result_t {
@@ -171,6 +173,15 @@ const char *rn_result_to_str(rn_result_t result);
 rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
                               uint32_t height, const void *rgba,
                               size_t byte_count, struct rn_image_t *image);
+
+/* update a dedicated image or atlas region in place, outside rn_begin/rn_end
+ * region is relative to the image, or null for the entire image
+ * pixels are tightly packed rgba8 rows covering region
+ * borrowed images and dma-buf imports cannot be updated this way */
+rn_result_t rn_image_update(struct rn_state_t         *state,
+                            const struct rn_image_t   *image,
+                            const struct rn_box_u32_t *region, const void *rgba,
+                            size_t byte_count);
 
 /* Upload texture data to the renderer-managed texture atlas. Use this for
  * texture data you need packed, e.g. glyphs. Runara returns the created

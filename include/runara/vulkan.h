@@ -33,6 +33,8 @@ struct rn_vk_surface_impl_t {
    * False preserves the default FIFO presentation mode.
    */
   bool disable_vsync;
+  /* fall back to fifo when immediate presentation is unavailable */
+  bool allow_vsync_fallback;
 };
 
 /* Specifies options for Vulkan initialization */
@@ -61,6 +63,9 @@ struct rn_vk_init_options_t {
    * All registered external targets must use the selected format.
    */
   VkFormat external_format;
+
+  /* enable optional linux dma-buf import support when the device supports it */
+  bool enable_dmabuf_import;
 };
 
 /* Describes all Vulkan native handles managed by Runara */
@@ -152,3 +157,40 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
                                    VkFormat format, uint32_t width,
                                    uint32_t height,
                                    struct rn_image_t *out_image);
+
+#define RN_VK_DMABUF_MAX_PLANES 4
+
+struct rn_vk_dmabuf_format_t {
+  uint32_t format;
+  uint64_t modifier;
+  uint32_t plane_count;
+};
+
+struct rn_vk_dmabuf_plane_t {
+  int      fd;
+  uint32_t offset, stride;
+};
+
+struct rn_vk_dmabuf_desc_t {
+  uint32_t                    width, height, format;
+  uint64_t                    modifier;
+  uint32_t                    plane_count;
+  struct rn_vk_dmabuf_plane_t planes[RN_VK_DMABUF_MAX_PLANES];
+  /* borrowed sync-file fd, or -1 to wait on implicit dma-buf fences */
+  int  acquire_fence_fd;
+  bool premultiplied;
+};
+
+/* Return a borrowed format table, valid until rn_state_fini
+ * an empty table means that dma-buf import is unavailable
+ * only explicit modifiers and supported rgb formats are advertised */
+rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
+                                 const struct rn_vk_dmabuf_format_t **formats,
+                                 size_t                              *count);
+
+/* Import or refresh a dma-buf image before rn_begin, borrowing all input fds.
+ * Initialize image to zero for a new import, or pass an existing imported image
+ * to acquire it for another frame without reallocating its gpu storage. */
+rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
+                                    const struct rn_vk_dmabuf_desc_t *desc,
+                                    struct rn_image_t                *image);
