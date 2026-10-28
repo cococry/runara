@@ -106,12 +106,16 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
 
     if (last->pipeline == pipeline) {
       /* merge batches by pipeline */
+
       if (pipeline == renderer->atlas_pipeline) {
         /* atlas instances all share the same texture, so we can just merge */
         batch = last;
+
       } else {
         /* find if we already have the texture in the last batch */
+
         for (uint32_t slot = 0; slot < last->texture_count; ++slot) {
+
           if (last->textures[slot] == texture) {
             batch = last;
             texture_slot = slot;
@@ -120,6 +124,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
         }
 
         /* insert the texture into the last batch if we have space */
+
         if (!batch && last->texture_count < RN_RENDERER_MAX_TEXTURE_SLOTS) {
           texture_slot = last->texture_count;
           last->textures[last->texture_count++] = texture;
@@ -130,11 +135,13 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
   }
 
   if (!batch) {
+
     if (renderer->batch_count >= RN_RENDERER_MAX_INSTANCES)
       return RN_ERROR_OVERFLOW;
 
     /* make new batch */
     batch = &renderer->batches[renderer->batch_count++];
+
     *batch = (struct rn_draw_batch_t){
         .pipeline = pipeline,
         .first_instance = renderer->instance_count,
@@ -143,6 +150,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
     if (pipeline == renderer->dedicated_pipeline) {
       batch->textures[0] = texture;
       batch->texture_count = 1;
+
     } else {
       batch->textures[0] = renderer->atlas_texture;
       batch->texture_count = 1;
@@ -152,6 +160,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
   struct rn_quad_instance_t queued = *instance;
 
   /* params.x selects the sampler2D slot for dedicated images. */
+
   if (pipeline == renderer->dedicated_pipeline)
     queued.params[0] = (float)texture_slot;
 
@@ -184,6 +193,7 @@ static rn_result_t _configure_draw(struct rn_state_t *state,
 }
 
 static bool _valid_pixels(uint32_t width, uint32_t height, size_t byte_count) {
+
   if (!width || !height || (size_t)width > SIZE_MAX / 4u / height)
     return false;
 
@@ -191,6 +201,7 @@ static bool _valid_pixels(uint32_t width, uint32_t height, size_t byte_count) {
 }
 
 rn_result_t rn_renderer_init(struct rn_state_t *state) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -233,10 +244,12 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
                                                .usage = RN_BUFFER_STATIC,
                                                .size = sizeof(_quad_vertices),
                                                .data = _quad_vertices};
+
   const struct rn_buffer_desc_t index_desc = {.target = RN_BUFFER_INDEX,
                                               .usage = RN_BUFFER_STATIC,
                                               .size = sizeof(_quad_indices),
                                               .data = _quad_indices};
+
   const struct rn_buffer_desc_t instance_desc = {
       .target = RN_BUFFER_VERTEX,
       .usage = RN_BUFFER_DYNAMIC,
@@ -245,16 +258,19 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
 
   rn_result_t result = backend->create_buffer(backend->ctx, &vertex_desc,
                                               &renderer->vertex_buffer);
+
   if (result != RN_OK)
     goto failed;
 
   result = backend->create_buffer(backend->ctx, &index_desc,
                                   &renderer->index_buffer);
+
   if (result != RN_OK)
     goto failed;
 
   result = backend->create_buffer(backend->ctx, &instance_desc,
                                   &renderer->instance_buffer);
+
   if (result != RN_OK)
     goto failed;
 
@@ -274,8 +290,10 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   };
 
   /* Each sampler is assigned to its matching texture unit at creation. */
+
   struct rn_uniform_binding_t
       dedicated_uniforms[RN_RENDERER_MAX_TEXTURE_SLOTS + 1] = {0};
+
   char sampler_names[RN_RENDERER_MAX_TEXTURE_SLOTS][24];
 
   for (uint32_t slot = 0; slot < RN_RENDERER_MAX_TEXTURE_SLOTS; ++slot) {
@@ -321,11 +339,13 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
 
   result = backend->create_pipeline(backend->ctx, &atlas_desc,
                                     &renderer->atlas_pipeline);
+
   if (result != RN_OK)
     goto failed;
 
   result = backend->create_pipeline(backend->ctx, &dedicated_desc,
                                     &renderer->dedicated_pipeline);
+
   if (result != RN_OK)
     goto failed;
 
@@ -344,10 +364,12 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
 
   result = backend->create_texture_array(backend->ctx, &texture_desc,
                                          &renderer->atlas_texture);
+
   if (result != RN_OK)
     goto failed;
 
   /* linesky supports only up until uint16 dimensions */
+
   if (RN_RENDERER_ATLAS_WIDTH > UINT16_MAX ||
       RN_RENDERER_ATLAS_HEIGHT > UINT16_MAX)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -356,6 +378,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   renderer->atlas_layers = allocator->alloc(sizeof(*renderer->atlas_layers) *
                                                 RN_RENDERER_ATLAS_LAYERS,
                                             allocator->ctx);
+
   if (!renderer->atlas_layers) {
     result = RN_ERROR_OUT_OF_MEMORY;
     goto failed;
@@ -373,6 +396,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
          sizeof(*renderer->atlas_layers) * RN_RENDERER_ATLAS_LAYERS);
 
   for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer) {
+
     ls_atlas_init(
         &renderer->atlas_layers[layer],
         (ls_vec2d){RN_RENDERER_ATLAS_WIDTH, RN_RENDERER_ATLAS_HEIGHT});
@@ -405,6 +429,7 @@ failed:
 }
 
 void rn_renderer_fini(struct rn_state_t *state) {
+
   if (!state)
     return;
 
@@ -419,34 +444,43 @@ void rn_renderer_fini(struct rn_state_t *state) {
     backend->destroy_texture(backend->ctx, renderer->atlas_texture);
 
   if (backend->destroy_pipeline) {
+
     if (renderer->atlas_pipeline != RN_INVALID_HANDLE)
       backend->destroy_pipeline(backend->ctx, renderer->atlas_pipeline);
+
     if (renderer->dedicated_pipeline != RN_INVALID_HANDLE)
       backend->destroy_pipeline(backend->ctx, renderer->dedicated_pipeline);
   }
 
   if (backend->destroy_buffer) {
+
     if (renderer->vertex_buffer != RN_INVALID_HANDLE)
       backend->destroy_buffer(backend->ctx, renderer->vertex_buffer);
+
     if (renderer->index_buffer != RN_INVALID_HANDLE)
       backend->destroy_buffer(backend->ctx, renderer->index_buffer);
+
     if (renderer->instance_buffer != RN_INVALID_HANDLE)
       backend->destroy_buffer(backend->ctx, renderer->instance_buffer);
   }
 
   if (allocator->free) {
+
     if (renderer->instances)
       allocator->free(renderer->instances, allocator->ctx);
+
     if (renderer->batches)
       allocator->free(renderer->batches, allocator->ctx);
   }
 
   if (renderer->atlas_layers) {
+
     for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer)
       free(renderer->atlas_layers[layer].skyline);
 
     allocator->free(renderer->atlas_layers, allocator->ctx);
   }
+
   if (renderer->atlas_scratch)
     allocator->free(renderer->atlas_scratch, allocator->ctx);
 
@@ -456,6 +490,7 @@ void rn_renderer_fini(struct rn_state_t *state) {
 }
 
 rn_result_t rn_begin(struct rn_state_t *state) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -476,6 +511,7 @@ rn_result_t rn_begin(struct rn_state_t *state) {
 }
 
 rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -491,6 +527,7 @@ rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
 }
 
 rn_result_t rn_clear_color_buffer(struct rn_state_t *state) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -507,10 +544,12 @@ rn_result_t rn_clear_color_buffer(struct rn_state_t *state) {
 
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
                          struct rn_color_t color) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
   struct rn_renderer_t *renderer = &state->renderer;
+
   struct rn_quad_instance_t instance = {
       .rect = {rect.x, rect.y, rect.width, rect.height},
       .color = {color.r, color.g, color.b, color.a},
@@ -525,6 +564,7 @@ rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
 rn_result_t rn_draw_texture(struct rn_state_t *state,
                             const struct rn_image_t *image,
                             struct rn_rect_t rect, struct rn_color_t tint) {
+
   if (!state || !image || image->texture == RN_INVALID_HANDLE)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -552,6 +592,7 @@ rn_result_t rn_draw_texture(struct rn_state_t *state,
 }
 
 rn_result_t rn_end(struct rn_state_t *state) {
+
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -567,6 +608,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
     result = backend->write_buffer(
         backend->ctx, renderer->instance_buffer, 1, 0, renderer->instances,
         sizeof(*renderer->instances) * renderer->instance_count);
+
     if (result != RN_OK)
       goto finish;
 
@@ -578,6 +620,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
 
       if (batch->pipeline != active_pipeline) {
         result = _configure_draw(state, batch->pipeline);
+
         if (result != RN_OK)
           goto finish;
 
@@ -587,6 +630,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
       for (uint32_t slot = 0; slot < batch->texture_count; ++slot) {
         result =
             backend->set_texture(backend->ctx, slot, batch->textures[slot]);
+
         if (result != RN_OK)
           goto finish;
       }
@@ -600,6 +644,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
       };
 
       result = backend->draw_indexed_instanced(backend->ctx, &draw);
+
       if (result != RN_OK)
         goto finish;
     }
@@ -612,9 +657,11 @@ finish: {
   return result == RN_OK ? end_result : result;
 }
 }
+
 rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
                                uint32_t height, const void *rgba,
                                size_t byte_count, struct rn_image_t *image) {
+
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -628,6 +675,7 @@ rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
       .height = height,
       .format = RN_TEXTURE_RGBA8,
   };
+
   rn_texture_handle_t texture = RN_INVALID_HANDLE;
 
   RN_RENDERER_CHECK(
@@ -651,6 +699,7 @@ rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
 rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
                            uint32_t height, const void *rgba, size_t byte_count,
                            struct rn_image_t *image) {
+
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -662,6 +711,7 @@ rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
     return RN_ERROR_BAD_STATE;
 
   /* Linesky uses uint16_t for its atlas and rectangle dimensions. */
+
   if (RN_RENDERER_ATLAS_WIDTH > UINT16_MAX ||
       RN_RENDERER_ATLAS_HEIGHT > UINT16_MAX)
     return RN_ERROR_BAD_STATE;
@@ -755,6 +805,7 @@ rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
 }
 
 void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
+
   if (!state || !image)
     return;
 
@@ -771,6 +822,7 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
 
 void rn_canvas_set_bounds(struct rn_state_t *state,
                           const struct rn_box_u32_t *canvas) {
+
   if (!state || !canvas)
     return;
   struct rn_renderer_t *renderer = &state->renderer;

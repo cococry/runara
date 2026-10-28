@@ -8,6 +8,7 @@ if get_option('glfw-examples')
     'image-vk',
     'rect-gl',
     'rect-vk',
+    'multi-window-vk',
     'custom-log-gl',
     'custom-shader-gl',
     'custom-shader-vk',

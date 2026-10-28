@@ -9,6 +9,7 @@ layout(location = 0) out vec4 out_color;
 vec4 sample_texture(int slot, vec2 uv) {
   // Constant sampler indices keep the shader Vulkan 1.0 compatible without
   // shaderSampledImageArrayDynamicIndexing.
+
   switch (slot) {
     case 0: return texture(u_textures[0], uv);
     case 1: return texture(u_textures[1], uv);

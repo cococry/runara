@@ -12,14 +12,17 @@ static void *_gl_load_proc(const char *name) {
 }
 
 static void resize_cb(int width, int height) {
+
   struct rn_box_u32_t bounds = {
       .width = (uint32_t)width,
       .height = (uint32_t)height,
   };
+
   rn_canvas_set_bounds(state, &bounds);
 }
 
 int main(void) {
+
   if (SDL_Init(SDL_INIT_VIDEO) != 0)
     return EXIT_FAILURE;
 
@@ -41,6 +44,7 @@ int main(void) {
   }
 
   SDL_GLContext context = SDL_GL_CreateContext(window);
+
   if (!context) {
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -57,7 +61,7 @@ int main(void) {
   int width, height;
   SDL_GL_GetDrawableSize(window, &width, &height);
 
-  state = rn_state_init(&options, width, height);
+  state = rn_state_init(&options);
 
   if (!state) {
     SDL_GL_DeleteContext(context);
@@ -74,24 +78,30 @@ int main(void) {
     SDL_Event event;
 
     while (SDL_PollEvent(&event)) {
+
       switch (event.type) {
       case SDL_QUIT:
         running = false;
         break;
 
       case SDL_WINDOWEVENT:
+
         if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
           SDL_GL_GetDrawableSize(window, &width, &height);
           resize_cb(width, height);
         }
+
         break;
       }
     }
 
     rn_begin(state);
+
     rn_clear_color(state, (rn_color_t){0.2, 0.2, 0.2, 1.0});
+
     rn_draw_rect(state, (struct rn_rect_t){50, 50, 100, 100},
                  (rn_color_t){1, 0, 0, 1});
+
     rn_end(state);
 
     SDL_GL_SwapWindow(window);

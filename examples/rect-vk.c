@@ -9,9 +9,9 @@ static const char *const *_extensions(void *user, uint32_t *count) {
   return glfwGetRequiredInstanceExtensions(count);
 }
 
-static VkResult _surface(void *user, VkInstance instance,
-                         VkSurfaceKHR *surface) {
-  return glfwCreateWindowSurface(instance, (GLFWwindow *)user, NULL, surface);
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                         VkSurfaceKHR *vk_surface) {
+  return glfwCreateWindowSurface(instance, (GLFWwindow *)user, NULL, vk_surface);
 }
 
 static void _get_framebuffer_size(void *user, uint32_t *width,
@@ -23,6 +23,7 @@ static void _get_framebuffer_size(void *user, uint32_t *width,
 }
 
 int main(void) {
+
   if (!glfwInit() || !glfwVulkanSupported())
     return EXIT_FAILURE;
 
@@ -38,15 +39,17 @@ int main(void) {
    * presentation system. This is preferred for simple usecases like a window.
    * For more complex usecases, like a wayland compositor managing its own
    * DRM/GBM handles, use RN_VK_TARGET_EXTERNAL. */
+
   const struct rn_vk_init_options_t vk = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform =
-          {
-              .user = window,
-              .instance_extensions = _extensions,
-              .create_surface = _surface,
-              .framebuffer_size = _get_framebuffer_size,
-          },
+      .user = window,
+      .instance_extensions = _extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = window,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _get_framebuffer_size,
   };
 
   struct rn_init_options_t options = {
@@ -56,7 +59,7 @@ int main(void) {
 
   uint32_t width = 0, height = 0;
   _get_framebuffer_size(window, &width, &height);
-  struct rn_state_t *state = rn_state_init(&options, width, height);
+  struct rn_state_t *state = rn_state_init(&options);
 
   if (!state) {
     glfwDestroyWindow(window);
@@ -64,22 +67,36 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return EXIT_FAILURE;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
+
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
 
     _get_framebuffer_size(window, &width, &height);
+
     if (!width || !height) {
       glfwWaitEvents();
       continue;
     }
 
     const struct rn_box_u32_t canvas = {.width = width, .height = height};
+
     rn_canvas_set_bounds(state, &canvas);
 
     if (rn_begin(state) != RN_OK)
       break;
 
     rn_clear_color(state, (rn_color_t){1, 1, 1, 1});
+
     rn_draw_rect(state, (struct rn_rect_t){50, 50, 100, 100},
                  (rn_color_t){1, 0, 0, 1});
 

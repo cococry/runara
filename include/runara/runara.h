@@ -84,7 +84,7 @@ typedef void *(*rn_gl_load_proc)(const char *name);
 struct rn_vk_init_options_t;
 
 struct rn_init_options_t {
-  /* optional, when not supplied, libc allocator functions are used (malloc(),
+  /* Optional, when not supplied, libc allocator functions are used (malloc(),
    * free(), realloc() )*/
   struct rn_allocator_t allocator;
 
@@ -94,9 +94,9 @@ struct rn_init_options_t {
   /* The render backend to use for this Runara state */
   enum rn_backend_type_t render_backend;
 
-  /* optional, but needs to be supplied for OpenGL */
+  /* Optional, but needs to be supplied for OpenGL */
   const rn_gl_load_proc gl_load_proc;
-  /* optional, but needs to be supplied for Vulkan */
+  /* Optional, but needs to be supplied for Vulkan */
   const struct rn_vk_init_options_t *vk_options;
 
   /* Optional. The GLSL shader source for the dedicated-texture fragment shader.
@@ -204,8 +204,7 @@ rn_result_t rn_end(struct rn_state_t *state);
 
 /* Init runara state. init_width and init_height are used as the initial
  * canvas dimensions. */
-struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
-                                 uint32_t init_width, uint32_t init_height);
+struct rn_state_t *rn_state_init(const struct rn_init_options_t *options);
 
 /* Destroy runara state. */
 void rn_state_fini(struct rn_state_t *state);

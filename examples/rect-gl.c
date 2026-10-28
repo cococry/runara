@@ -8,20 +8,25 @@
 struct rn_state_t *state = NULL;
 
 static void *_gl_load_proc(const char *name) {
+
   union {
     GLFWglproc function;
     void *pointer;
   } proc = {.function = glfwGetProcAddress(name)};
+
   return proc.pointer;
 }
 
 void resize_cb(GLFWwindow *window, int width, int height) {
   (void)window;
+
   struct rn_box_u32_t bounds = {.width = width, .height = height};
+
   rn_canvas_set_bounds(state, &bounds);
 }
 
 int main(void) {
+
   if (!glfwInit())
     return EXIT_FAILURE;
 
@@ -30,6 +35,7 @@ int main(void) {
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
   GLFWwindow *window = glfwCreateWindow(800, 600, "Runara rect", NULL, NULL);
+
   if (!window) {
     glfwTerminate();
     return EXIT_FAILURE;
@@ -43,7 +49,7 @@ int main(void) {
       .gl_load_proc = _gl_load_proc,
   };
 
-  state = rn_state_init(&options, 800, 600);
+  state = rn_state_init(&options);
 
   if (!state) {
     glfwDestroyWindow(window);
@@ -55,9 +61,12 @@ int main(void) {
     glfwPollEvents();
 
     rn_begin(state);
+
     rn_clear_color(state, (rn_color_t){0.2, 0.2, 0.2, 1.0}); 
+
     rn_draw_rect(state, (struct rn_rect_t){50, 50, 100, 100},
                  (rn_color_t){1, 0, 0, 1});
+
     rn_end(state);
 
     glfwSwapBuffers(window);

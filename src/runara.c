@@ -72,10 +72,12 @@ static void _log_init(struct rn_state_t *state,
 
       state->log.stream = stream;
       state->owns_log_stream = true;
+
     } else {
       /* Fall back to stdout. */
       RN_ERROR_HEADLESS("failed to open Runara logfile");
     }
+
   } else if (log_opts->log_stream) {
     RN_INFO(state->log, "Logging to host-specified log stream.");
     setvbuf(log_opts->log_stream, NULL, _IONBF, 0);
@@ -86,16 +88,19 @@ static void _log_init(struct rn_state_t *state,
 }
 
 static const char *_backend_type_to_str(enum rn_backend_type_t type) {
+
   switch (type) {
   case RN_RENDER_BACKEND_OPENGL:
     return "OpenGL";
   case RN_RENDER_BACKEND_VULKAN:
     return "Vulkan";
   }
+
   return "Unknown";
 }
 
 const char *rn_result_to_str(rn_result_t result) {
+
   switch (result) {
   case RN_OK:
     return "Success";
@@ -116,8 +121,8 @@ const char *rn_result_to_str(rn_result_t result) {
   }
 }
 
-struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
-                                 uint32_t init_width, uint32_t init_height) {
+struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
+
   if (!options) {
     RN_ERROR_HEADLESS("NULL rn_init_options_t supplied, cannot initialize");
     return NULL;
@@ -129,6 +134,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
     allocator.alloc = _default_alloc;
     allocator.realloc = _default_realloc;
     allocator.free = _default_free;
+
   } else if (!allocator.alloc || !allocator.realloc || !allocator.free) {
     RN_ERROR_HEADLESS("custom allocator requires alloc, realloc and free");
     return NULL;
@@ -142,6 +148,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
   }
 
   *state = (struct rn_state_t){0};
+
   state->allocator = allocator;
 
   RN_TRACE(state->log, "State allocated");
@@ -162,16 +169,15 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
 
     return NULL;
   }
+
   state->backend_init = true;
   state->backend_type = options->render_backend;
-
-  state->renderer.canvas.width = init_width;
-  state->renderer.canvas.height = init_height;
 
   RN_TRACE(state->log, "Render backend initialized (Backend: %s)",
            _backend_type_to_str(options->render_backend));
 
   int renderer_res = rn_renderer_init(state);
+
   if (renderer_res != RN_OK) {
     RN_FATAL(state->log, "Failed to initialize renderer: %s",
              rn_result_to_str(renderer_res));
@@ -180,6 +186,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
 
     return NULL;
   }
+
   state->renderer_init = true;
 
   RN_INFO(state->log, "Runara initialized successfully");
@@ -188,6 +195,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options,
 }
 
 void rn_state_fini(struct rn_state_t *state) {
+
   if (!state) {
     RN_ERROR_HEADLESS("Trying to destroy NULL Runara state");
     return;

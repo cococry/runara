@@ -17,8 +17,25 @@ typedef uint32_t rn_vk_target_handle_t;
 
 #define RN_VK_INVALID_TARGET UINT32_MAX
 
-/* Platform/presentation interface for the Vulkan renderer */
-struct rn_vk_platform_t {
+/* Window callbacks for creating and sizing a native VkSurfaceKHR. */
+struct rn_vk_surface_impl_t {
+  /* Per-window user data passed to both callbacks. */
+  void *user;
+
+  /* Creates a native VkSurfaceKHR. Runara owns and destroys this handle. */
+  VkResult (*create_vk_surface)(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface);
+
+  /* Returns the window framebuffer dimensions in physical pixels. */
+  void (*framebuffer_size)(void *user, uint32_t *width, uint32_t *height);
+};
+
+/* Specifies options for Vulkan initialization */
+struct rn_vk_init_options_t {
+  /* Selects managed window presentation or host-owned external images. */
+  enum rn_vk_target_mode_t mode;
+
+  /* User data passed to instance_extensions and accept_device. */
   void *user;
 
   /* Optional in external mode. Return required instance extensions.
@@ -26,22 +43,9 @@ struct rn_vk_platform_t {
    */
   const char *const *(*instance_extensions)(void *user, uint32_t *count);
 
-  /* Required in managed mode. Runara destroys the resulting surface. */
-  VkResult (*create_surface)(void *user, VkInstance instance,
-                             VkSurfaceKHR *out_surface);
-
-  /* Required in managed mode. Return physical framebuffer dimensions. */
-  void (*framebuffer_size)(void *user, uint32_t *width, uint32_t *height);
-
-  /* Optional in all modes. */ 
+  /* Optional in all modes. */
   bool (*accept_device)(void *user, VkInstance instance,
                         VkPhysicalDevice physical_device);
-};
-
-/* Specifies options for Vulkan initialization */
-struct rn_vk_init_options_t {
-  enum rn_vk_target_mode_t mode;
-  struct rn_vk_platform_t platform;
 
   /* Optional additional device extensions provided by the user */
   const char *const *device_extensions;
@@ -63,7 +67,7 @@ struct rn_vk_native_handles_t {
   uint32_t graphics_queue_family;
 };
 
-/* Borrow a host created VkImage 
+/* Borrow a host created VkImage
  * The image and its VkDeviceMemory remain owned by the host.
  * Runara owns only its image view and framebuffer.
  *
@@ -81,17 +85,43 @@ struct rn_vk_external_target_desc_t {
 
 struct rn_state_t;
 
+/* Opaque Runara object owning a native VkSurfaceKHR and its swapchain. */
+struct rn_vk_managed_surface_t;
+
+/* Creates a managed window target and selects it for rendering.
+ * Targets share VK_FORMAT_B8G8R8A8_UNORM. Runara destroys remaining targets
+ * at shutdown. Callback user data must remain valid until target destruction.
+ * A zero-sized window gets its swapchain when its framebuffer becomes nonzero.
+ */
+rn_result_t
+rn_vk_surface_create(struct rn_state_t *state,
+                     const struct rn_vk_surface_impl_t *impl,
+                     struct rn_vk_managed_surface_t **out_managed_surface);
+
+/* Requires a Vulkan state in managed mode. Selects a Runara managed target (a
+ * rn_vk_managed_surface_t) to render to. Call this before rn_begin().
+ * This only assigns a pointer. NULL deselects the target.
+ */
+void rn_vk_surface_set_current(struct rn_state_t *state,
+                               struct rn_vk_managed_surface_t *managed_surface);
+
+/* Destroys the Runara target, its swapchain and its native VkSurfaceKHR.
+ * Call between frames, before destroying the native window.
+ */
+rn_result_t rn_vk_surface_destroy(
+    struct rn_state_t *state, struct rn_vk_managed_surface_t *managed_surface);
+
 /* Returns all Vulkan native handles managed by Runara */
-rn_result_t rn_vk_get_native_handles(
-    struct rn_state_t *state,
-    struct rn_vk_native_handles_t *out_handles);
+rn_result_t
+rn_vk_get_native_handles(struct rn_state_t *state,
+                         struct rn_vk_native_handles_t *out_handles);
 
 /* Registers an external render target for Runara. Vulkan must have been
  * initialized with .mode = RN_VK_TARGET_EXTERNAL for this.*/
-rn_result_t rn_vk_target_register(
-    struct rn_state_t *state,
-    const struct rn_vk_external_target_desc_t *desc,
-    rn_vk_target_handle_t *out_target);
+rn_result_t
+rn_vk_target_register(struct rn_state_t *state,
+                      const struct rn_vk_external_target_desc_t *desc,
+                      rn_vk_target_handle_t *out_target);
 
 /* Sets the current external Vulkan render target. Vulkan must have been
  * initialized with .mode = RN_VK_TARGET_EXTERNAL for this.*/
@@ -113,11 +143,7 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state);
  * required acquire synchronization before drawing it.
  * rn_texture_release() releases the Runara wrapper, not the borrowed image.
  */
-rn_result_t rn_image_from_vk_image(
-    struct rn_state_t *state,
-    VkImage image,
-    VkFormat format,
-    uint32_t width,
-    uint32_t height,
-    struct rn_image_t *out_image);
-
+rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
+                                   VkFormat format, uint32_t width,
+                                   uint32_t height,
+                                   struct rn_image_t *out_image);

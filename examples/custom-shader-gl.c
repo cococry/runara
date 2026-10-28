@@ -19,6 +19,7 @@
 static struct rn_state_t *state = NULL;
 
 static void *_gl_load_proc(const char *name) {
+
   union {
     GLFWglproc function;
     void *pointer;
@@ -132,6 +133,7 @@ int main(int argc, char **argv) {
   GLFWwindow *window = NULL;
 
   struct rn_image_t image = {0};
+
   struct rn_image_t image2 = {0};
 
   bool image_uploaded = false;
@@ -167,7 +169,7 @@ int main(int argc, char **argv) {
       .log = {.verbose = true, .logfile = true},
       .shader_fragment_dedicated_src = _frag_dedicated};
 
-  state = rn_state_init(&options, WINDOW_WIDTH, WINDOW_HEIGHT);
+  state = rn_state_init(&options);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara\n");
@@ -181,12 +183,14 @@ int main(int argc, char **argv) {
   int pixel2_height = 0;
 
   // Load first image
+
   if (!load_image(image_path, &image, &pixel_width, &pixel_height))
     goto cleanup;
 
   image_uploaded = true;
 
   // Load second image
+
   if (!load_image(image2_path, &image2, &pixel2_width, &pixel2_height))
     goto cleanup;
 
@@ -241,6 +245,7 @@ int main(int argc, char **argv) {
                           background);
 
     // Draw 10 images, alternating between image and image2
+
     for (uint32_t i = 0; i < 10 && result == RN_OK; i++) {
       bool use_image2 = (i % 2) != 0;
 
@@ -272,7 +277,9 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (state) {
+
     if (image2_uploaded)
       rn_texture_release(state, &image2);
 

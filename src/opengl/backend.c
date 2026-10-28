@@ -289,6 +289,7 @@ static const char *_frag_dedicated =
 static bool glad_loaded = false;
 
 static const char *_gl_error_name(GLenum error) {
+
   switch (error) {
   case GL_INVALID_ENUM:
     return "GL_INVALID_ENUM";
@@ -346,6 +347,7 @@ static struct rn_gl_pipeline *_pipeline(struct rn_gl_context *ctx,
 }
 
 static rn_result_t _ensure_buffers(struct rn_gl_context *ctx) {
+
   if (!_handle_count_fits(ctx->buffer_count) ||
       ctx->buffer_count == SIZE_MAX / sizeof(*ctx->buffers))
     return RN_ERROR_OVERFLOW;
@@ -362,6 +364,7 @@ static rn_result_t _ensure_buffers(struct rn_gl_context *ctx) {
 }
 
 static rn_result_t _ensure_textures(struct rn_gl_context *ctx) {
+
   if (!_handle_count_fits(ctx->texture_count) ||
       ctx->texture_count == SIZE_MAX / sizeof(*ctx->textures))
     return RN_ERROR_OVERFLOW;
@@ -378,6 +381,7 @@ static rn_result_t _ensure_textures(struct rn_gl_context *ctx) {
 }
 
 static rn_result_t _ensure_pipelines(struct rn_gl_context *ctx) {
+
   if (!_handle_count_fits(ctx->pipeline_count) ||
       ctx->pipeline_count == SIZE_MAX / sizeof(*ctx->pipelines))
     return RN_ERROR_OVERFLOW;
@@ -450,6 +454,7 @@ static rn_result_t _create_buffer(void *backend_ctx,
       : desc->usage == RN_BUFFER_DYNAMIC || desc->usage == RN_BUFFER_STAGING
           ? GL_DYNAMIC_DRAW
           : 0;
+
   if (!usage)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -461,6 +466,7 @@ static rn_result_t _create_buffer(void *backend_ctx,
   GLenum target = desc->target == RN_BUFFER_INDEX ? GL_ELEMENT_ARRAY_BUFFER
                                                   : GL_ARRAY_BUFFER;
   glGenBuffers(1, &gl_id);
+
   if (!gl_id) {
     _RN_GL_LOG_ERROR(ctx->log, "glGenBuffers failed");
     _gl_check(ctx->log, __func__);
@@ -469,11 +475,14 @@ static rn_result_t _create_buffer(void *backend_ctx,
 
   glBindBuffer(target, gl_id);
   glBufferData(target, (GLsizeiptr)desc->size, desc->data, usage);
+
   if (_gl_check(ctx->log, __func__)) {
     glDeleteBuffers(1, &gl_id);
     return RN_ERROR_BACKEND;
   }
+
   *out_handle = (rn_buffer_handle_t)ctx->buffer_count;
+
   ctx->buffers[ctx->buffer_count++] =
       (struct rn_gl_buffer){gl_id, target, desc->size, true};
 
@@ -499,10 +508,13 @@ static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle) {
 
   glDeleteBuffers(1, &gpu_buffer->gl_id);
   gpu_buffer->alive = false;
+
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
        ++binding_index)
+
     if (ctx->bindings[binding_index].handle == handle)
       ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
+
   if (ctx->index_buffer == handle)
     ctx->index_buffer = RN_INVALID_HANDLE;
 }
@@ -544,6 +556,7 @@ static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
   GLint compiled = 0;
 
   glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+
   if (!compiled) {
     GLchar info_log[2048];
     GLsizei log_length = 0;
@@ -556,6 +569,7 @@ static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
     glDeleteShader(shader);
     return 0;
   }
+
   return shader;
 }
 
@@ -571,6 +585,7 @@ _create_shader_program(struct rn_gl_context *ctx,
       ctx, GL_FRAGMENT_SHADER,
       shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ? ctx->frag_atlas
                                                    : ctx->frag_dedicated);
+
   if (!fragment_shader) {
     glDeleteShader(vertex_shader);
     return 0;
@@ -596,6 +611,7 @@ _create_shader_program(struct rn_gl_context *ctx,
   GLint linked = 0;
 
   glGetProgramiv(program, GL_LINK_STATUS, &linked);
+
   if (!linked) {
     GLchar info_log[2048];
     GLsizei log_length = 0;
@@ -607,6 +623,7 @@ _create_shader_program(struct rn_gl_context *ctx,
     glDeleteProgram(program);
     return 0;
   }
+
   return program;
 }
 
@@ -638,6 +655,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
     for (size_t attribute_index = 0; attribute_index < layout->attribute_count;
          ++attribute_index)
+
       if (layout->attributes[attribute_index].location >= 16 ||
           layout->attributes[attribute_index].format > RN_VERTEX_FLOAT32X4)
         return RN_ERROR_INVALID_ARGUMENT;
@@ -647,9 +665,11 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
   if (result)
     return result;
+
   struct rn_gl_pipeline gpu_pipeline = {0};
 
   gpu_pipeline.gl_id = _create_shader_program(ctx, desc->shader);
+
   if (!gpu_pipeline.gl_id)
     return RN_ERROR_BACKEND;
 
@@ -684,6 +704,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   }
 
   glUseProgram(gpu_pipeline.gl_id);
+
   for (size_t binding_index = 0; binding_index < desc->uniform_binding_count;
        ++binding_index) {
     const struct rn_uniform_binding_t *uniform =
@@ -698,11 +719,13 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
     if (location < 0)
       continue;
+
     if (uniform->type == RN_UNIFORM_VEC2)
       glUniform2f(location, uniform->f_data[0], uniform->f_data[1]);
     else if (uniform->type == RN_UNIFORM_SAMPLER_2D ||
              uniform->type == RN_UNIFORM_SAMPLER_2D_ARRAY)
       glUniform1i(location, (GLint)uniform->binding);
+
     else {
       result = RN_ERROR_INVALID_ARGUMENT;
       goto fail;
@@ -713,6 +736,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
     result = RN_ERROR_BACKEND;
     goto fail;
   }
+
   *out_handle = (rn_pipeline_handle_t)ctx->pipeline_count;
   ctx->pipelines[ctx->pipeline_count++] = gpu_pipeline;
 
@@ -722,6 +746,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   return RN_OK;
 
 fail:
+
   for (size_t binding_index = 0; binding_index < gpu_pipeline.layout_count;
        ++binding_index)
     ctx->alloc->free(gpu_pipeline.attributes[binding_index], ctx->alloc->ctx);
@@ -747,6 +772,7 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
     ctx->pipeline = RN_INVALID_HANDLE;
 
   glDeleteProgram(gpu_pipeline->gl_id);
+
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
        ++binding_index)
     ctx->alloc->free(gpu_pipeline->attributes[binding_index], ctx->alloc->ctx);
@@ -767,12 +793,15 @@ static rn_result_t _set_pipeline(void *backend_ctx,
 
   glUseProgram(gpu_pipeline->gl_id);
   glBindVertexArray(ctx->vertex_array);
+
   if (gpu_pipeline->depth_test)
     glEnable(GL_DEPTH_TEST);
   else
     glDisable(GL_DEPTH_TEST);
+
   if (gpu_pipeline->blend == RN_BLEND_OPAQUE)
     glDisable(GL_BLEND);
+
   else {
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
@@ -784,6 +813,7 @@ static rn_result_t _set_pipeline(void *backend_ctx,
 
   glDisable(GL_CULL_FACE);
   ctx->pipeline = handle;
+
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
        ++binding_index)
     ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
@@ -807,6 +837,7 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
        ++binding_index)
+
     if (gpu_pipeline->layouts[binding_index].binding == binding) {
       layout = &gpu_pipeline->layouts[binding_index];
       break;
@@ -816,6 +847,7 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
     return RN_ERROR_INVALID_ARGUMENT;
 
   glBindBuffer(GL_ARRAY_BUFFER, gpu_buffer->gl_id);
+
   for (size_t binding_index = 0; binding_index < layout->attribute_count;
        ++binding_index) {
     const struct rn_vertex_attribute_t *attribute =
@@ -901,6 +933,7 @@ static rn_result_t _set_uniform_2f(void *backend_ctx,
     glUniform2f(location, value_x, value_y);
 
   /* Uniform updates must not make GL state tracking silently incorrect. */
+
   if (ctx->pipeline != handle)
     ctx->pipeline = RN_INVALID_HANDLE;
   return _gl_check(ctx->log, __func__);
@@ -929,6 +962,7 @@ _draw_indexed_instanced(void *backend_ctx,
         &gpu_pipeline->layouts[binding_index];
 
     /* Skip any vertex-data buffers (RN_STEP_VERTEX) */
+
     if (layout->step_mode != RN_STEP_INSTANCE)
       continue;
 
@@ -967,6 +1001,7 @@ static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
     return RN_ERROR_OVERFLOW;
 
   required_bytes *= 4u;
+
   if (rgba_pixels && data_size < (size_t)required_bytes)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -980,6 +1015,7 @@ static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
   GLuint gl_id = 0;
 
   glGenTextures(1, &gl_id);
+
   if (!gl_id) {
     _RN_GL_LOG_ERROR(ctx->log, "glGenTextures failed");
     _gl_check(ctx->log, __func__);
@@ -992,12 +1028,14 @@ static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
   glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
   if (target == GL_TEXTURE_2D)
     glTexImage2D(target, 0, GL_RGBA8, (GLsizei)width, (GLsizei)height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, rgba_pixels);
   else
     glTexImage3D(target, 0, GL_RGBA8, (GLsizei)width, (GLsizei)height,
                  (GLsizei)layers, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
   if (_gl_check(ctx->log, __func__)) {
     glDeleteTextures(1, &gl_id);
     return RN_ERROR_BACKEND;
@@ -1026,6 +1064,7 @@ static rn_result_t _create_texture(void *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *rgba_pixels, size_t size,
                                    rn_texture_handle_t *out_handle) {
+
   if (!desc || desc->format != RN_TEXTURE_RGBA8)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -1038,6 +1077,7 @@ static rn_result_t
 _create_texture_array(void *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
                       rn_texture_handle_t *out_handle) {
+
   if (!desc || desc->format != RN_TEXTURE_RGBA8)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -1071,6 +1111,7 @@ _write_texture_array_layer(void *backend_ctx,
     return RN_ERROR_OVERFLOW;
 
   required_bytes *= 4u;
+
   if (size < (size_t)required_bytes)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -1114,6 +1155,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
   GLint max_texture_units = 0;
 
   glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &max_texture_units);
+
   if (!gpu_texture || slot >= (uint32_t)max_texture_units)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -1128,6 +1170,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const void *backend_info,
                              const char *frag_dedicated,
                              const char *frag_atlas) {
+
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
 
@@ -1151,6 +1194,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
 
     glad_loaded = true;
     _RN_GL_LOG_TRACE(log, "GLAD function loading succeeded");
+
   } else {
     _RN_GL_LOG_TRACE(log, "reusing previously loaded GLAD functions");
   }
@@ -1176,6 +1220,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   _RN_GL_LOG_TRACE(log, "creating backend vertex array");
 
   glGenVertexArrays(1, &ctx->vertex_array);
+
   if (!ctx->vertex_array) {
     _RN_GL_LOG_ERROR(log, "glGenVertexArrays failed");
     _gl_check(log, __func__);
@@ -1188,6 +1233,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
 
   ctx->pipeline = RN_INVALID_HANDLE;
   ctx->index_buffer = RN_INVALID_HANDLE;
+
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
        ++binding_index)
     ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
@@ -1206,6 +1252,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
 
 void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
                         const struct rn_allocator_t *alloc) {
+
   if (!backend || !alloc || backend->create_buffer != _create_buffer)
     return;
 
@@ -1221,19 +1268,23 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
 
   for (size_t resource_index = 0; resource_index < ctx->buffer_count;
        ++resource_index)
+
     if (ctx->buffers[resource_index].alive)
       glDeleteBuffers(1, &ctx->buffers[resource_index].gl_id);
 
   for (size_t resource_index = 0; resource_index < ctx->texture_count;
        ++resource_index)
+
     if (ctx->textures[resource_index].alive &&
         !ctx->textures[resource_index].borrowed)
       glDeleteTextures(1, &ctx->textures[resource_index].gl_id);
 
   for (size_t resource_index = 0; resource_index < ctx->pipeline_count;
        ++resource_index)
+
     if (ctx->pipelines[resource_index].alive) {
       glDeleteProgram(ctx->pipelines[resource_index].gl_id);
+
       for (size_t binding_index = 0;
            binding_index < ctx->pipelines[resource_index].layout_count;
            ++binding_index)
@@ -1262,11 +1313,13 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
 rn_result_t rn_image_from_gl_texture(struct rn_state_t *state, uint32_t texture,
                                      uint32_t width, uint32_t height,
                                      struct rn_image_t *out_image) {
+
   if (!state || !out_image || !texture || !width || !height ||
       width > INT_MAX || height > INT_MAX)
     return RN_ERROR_INVALID_ARGUMENT;
 
   /* make sure this state uses the gl backend. */
+
   if (state->backend.create_texture != _create_texture)
     return RN_ERROR_BACKEND;
 
@@ -1277,6 +1330,7 @@ rn_result_t rn_image_from_gl_texture(struct rn_state_t *state, uint32_t texture,
 
   /* the texture must already exist in the current gl context
    * (or a gl context sharing its objects) */
+
   if (glIsTexture((GLuint)texture) != GL_TRUE)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -1299,6 +1353,7 @@ rn_result_t rn_image_from_gl_texture(struct rn_state_t *state, uint32_t texture,
     return RN_ERROR_BACKEND;
 
   /* confirm the info */
+
   if (actual_width != (GLint)width || actual_height != (GLint)height)
     return RN_ERROR_INVALID_ARGUMENT;
 

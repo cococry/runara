@@ -62,6 +62,7 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
 void rn_backend_fini(struct rn_backend_impl_t *impl,
                      enum rn_backend_type_t type,
                      const struct rn_allocator_t *alloc) {
+
   if (!impl || !alloc)
     return;
 

@@ -25,9 +25,9 @@ static const char *const *_extensions(void *user, uint32_t *count) {
   return glfwGetRequiredInstanceExtensions(count);
 }
 
-static VkResult _surface(void *user, VkInstance instance,
-                         VkSurfaceKHR *surface) {
-  return glfwCreateWindowSurface(instance, (GLFWwindow *)user, NULL, surface);
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                         VkSurfaceKHR *vk_surface) {
+  return glfwCreateWindowSurface(instance, (GLFWwindow *)user, NULL, vk_surface);
 }
 
 static void _get_framebuffer_size(void *user, uint32_t *width,
@@ -78,6 +78,7 @@ int main(int argc, char **argv) {
   GLFWwindow *window = NULL;
 
   struct rn_image_t image = {0};
+
   struct rn_image_t image2 = {0};
 
   bool image_uploaded = false;
@@ -104,14 +105,17 @@ int main(int argc, char **argv) {
    * presentation system. This is preferred for simple usecases like a window.
    * For more complex usecases, like a wayland compositor managing its own
    * DRM/GBM handles, use RN_VK_TARGET_EXTERNAL. */
+
   const struct rn_vk_init_options_t vk = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform = {
-          .user = window,
-          .instance_extensions = _extensions,
-          .create_surface = _surface,
-          .framebuffer_size = _get_framebuffer_size,
-      },
+      .user = window,
+      .instance_extensions = _extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = window,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _get_framebuffer_size,
   };
 
   struct rn_init_options_t options = {
@@ -123,12 +127,23 @@ int main(int argc, char **argv) {
   uint32_t width = 0, height = 0;
   _get_framebuffer_size(window, &width, &height);
 
-  state = rn_state_init(&options, width, height);
+  state = rn_state_init(&options);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara Vulkan\n");
     goto cleanup;
   }
+
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    state = NULL;
+    fprintf(stderr, "Failed to initialize Runara Vulkan\n");
+    goto cleanup;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
 
   int pixel_width = 0;
   int pixel_height = 0;
@@ -153,6 +168,7 @@ int main(int argc, char **argv) {
       IMAGE_WIDTH * (float)pixel2_height / (float)pixel2_width;
 
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 0.8f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   while (!glfwWindowShouldClose(window)) {
@@ -201,6 +217,7 @@ int main(int argc, char **argv) {
         background);
 
     /* Draw 10 alternating images. */
+
     for (uint32_t i = 0; i < 10 && result == RN_OK; i++) {
       bool use_image2 = (i % 2) != 0;
 
@@ -228,7 +245,6 @@ int main(int argc, char **argv) {
               (int)result);
       goto cleanup;
     }
-
     /* No glfwSwapBuffers():
      * Runara handles Vulkan presentation in rn_end().
      */
@@ -237,7 +253,9 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (state) {
+
     if (image2_uploaded)
       rn_texture_release(state, &image2);
 

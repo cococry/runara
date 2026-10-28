@@ -34,8 +34,8 @@ struct x11_window_t {
 };
 
 static const char *const *_instance_extensions(void *user, uint32_t *count);
-static VkResult _create_surface(void *user, VkInstance instance,
-                                VkSurfaceKHR *out_surface);
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface);
 static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height);
 static void _process_event(struct x11_window_t *x11, XEvent *event);
 static double _elapsed_seconds(const struct timespec *start);
@@ -52,8 +52,8 @@ static const char *const *_instance_extensions(void *user, uint32_t *count) {
   return extensions;
 }
 
-static VkResult _create_surface(void *user, VkInstance instance,
-                                VkSurfaceKHR *out_surface) {
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface) {
   struct x11_window_t *x11 = user;
 
   const VkXlibSurfaceCreateInfoKHR info = {
@@ -62,7 +62,7 @@ static VkResult _create_surface(void *user, VkInstance instance,
       .window = x11->window,
   };
 
-  return vkCreateXlibSurfaceKHR(instance, &info, NULL, out_surface);
+  return vkCreateXlibSurfaceKHR(instance, &info, NULL, out_vk_surface);
 }
 
 static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height) {
@@ -73,12 +73,16 @@ static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height) {
 }
 
 static void _process_event(struct x11_window_t *x11, XEvent *event) {
+
   switch (event->type) {
+
   case ConfigureNotify:
+
     if (event->xconfigure.width > 0 && event->xconfigure.height > 0) {
       x11->width = (uint32_t)event->xconfigure.width;
       x11->height = (uint32_t)event->xconfigure.height;
     }
+
     break;
 
   case MapNotify:
@@ -90,11 +94,13 @@ static void _process_event(struct x11_window_t *x11, XEvent *event) {
     break;
 
   case KeyPress:
+
     if (XLookupKeysym(&event->xkey, 0) == XK_Escape)
       x11->running = false;
     break;
 
   case ClientMessage:
+
     if ((Atom)event->xclient.data.l[0] == x11->delete_window)
       x11->running = false;
     break;
@@ -123,8 +129,11 @@ int main(int argc, char **argv) {
   const char *image_path = argc > 1 ? argv[1] : "image.png";
 
   struct x11_window_t x11 = {0};
+
   struct rn_state_t *state = NULL;
+
   struct rn_image_t image = {0};
+
   bool image_uploaded = false;
   int exit_code = EXIT_FAILURE;
 
@@ -160,7 +169,8 @@ int main(int argc, char **argv) {
   XMapWindow(x11.display, x11.window);
   XFlush(x11.display);
 
-  /* The window must be mapped before surface/swapchain initialization. */
+  /* The window must be mapped before managed_surface/swapchain initialization. */
+
   while (x11.running && !x11.mapped) {
     XEvent event;
     XNextEvent(x11.display, &event);
@@ -172,13 +182,14 @@ int main(int argc, char **argv) {
 
   const struct rn_vk_init_options_t vk_options = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform =
-          {
-              .user = &x11,
-              .instance_extensions = _instance_extensions,
-              .create_surface = _create_surface,
-              .framebuffer_size = _framebuffer_size,
-          },
+      .user = &x11,
+      .instance_extensions = _instance_extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = &x11,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _framebuffer_size,
   };
 
   const struct rn_init_options_t options = {
@@ -191,12 +202,23 @@ int main(int argc, char **argv) {
           },
   };
 
-  state = rn_state_init(&options, x11.width, x11.height);
+  state = rn_state_init(&options);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
     goto cleanup;
   }
+
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    state = NULL;
+    fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
+    goto cleanup;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
 
   int pixel_width = 0;
   int pixel_height = 0;
@@ -235,7 +257,9 @@ int main(int argc, char **argv) {
 
   const float image_height =
       IMAGE_WIDTH * (float)pixel_height / (float)pixel_width;
+
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 1.0f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   struct timespec start = {0};
@@ -246,6 +270,7 @@ int main(int argc, char **argv) {
   }
 
   while (x11.running) {
+
     while (XPending(x11.display)) {
       XEvent event;
       XNextEvent(x11.display, &event);
@@ -310,7 +335,6 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Runara drawing failed (error %d)\n", (int)result);
       goto cleanup;
     }
-
     /* No glfwSwapBuffers():
      * Runara handles Vulkan presentation in rn_end().
      */
@@ -319,7 +343,9 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (state) {
+
     if (image_uploaded)
       rn_texture_release(state, &image);
 
@@ -327,6 +353,7 @@ cleanup:
   }
 
   if (x11.display) {
+
     if (x11.window != None)
       XDestroyWindow(x11.display, x11.window);
 

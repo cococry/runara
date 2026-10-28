@@ -33,6 +33,7 @@ static struct rn_state_t *state = NULL;
 static void *_gl_load_proc(const char *name);
 
 static void *_gl_load_proc(const char *name) {
+
   union {
     GLFWglproc function;
     void *pointer;
@@ -43,7 +44,9 @@ static void *_gl_load_proc(const char *name) {
 
 void resize_cb(GLFWwindow *window, int width, int height) {
   (void)window;
+
   struct rn_box_u32_t bounds = {.width = width, .height = height};
+
   rn_canvas_set_bounds(state, &bounds);
 }
 
@@ -51,6 +54,7 @@ void cool_custom_log(FILE *stream, enum rn_log_level_t level,
                      const char *subsystem, const char *function,
                      const char *file, int line, const char *fmt,
                      va_list args) {
+
   if (!stream || !fmt)
     return;
 
@@ -92,10 +96,12 @@ void cool_custom_log(FILE *stream, enum rn_log_level_t level,
 
   // Current time with millisecond precision.
   struct timespec ts;
+
   if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
     return;
 
   struct tm tm_info;
+
   if (!localtime_r(&ts.tv_sec, &tm_info))
     return;
 
@@ -154,7 +160,9 @@ int main(int argc, char **argv) {
   }
 
   GLFWwindow *window = NULL;
+
   struct rn_image_t image = {0};
+
   bool image_uploaded = false;
   int exit_code = EXIT_FAILURE;
 
@@ -190,7 +198,7 @@ int main(int argc, char **argv) {
               .log_stream = log_file},
   };
 
-  state = rn_state_init(&options, WINDOW_WIDTH, WINDOW_HEIGHT);
+  state = rn_state_init(&options);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara\n");
@@ -229,7 +237,9 @@ int main(int argc, char **argv) {
 
   const float image_height =
       IMAGE_WIDTH * (float)pixel_height / (float)pixel_width;
+
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 1.0f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   while (!glfwWindowShouldClose(window)) {
@@ -290,7 +300,9 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (state) {
+
     if (image_uploaded)
       rn_texture_release(state, &image);
 

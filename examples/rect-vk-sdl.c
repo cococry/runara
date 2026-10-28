@@ -17,11 +17,11 @@ static const char *const *_extensions(void *user, uint32_t *count) {
   return (const char *const *)instance_extensions;
 }
 
-static VkResult _surface(void *user, VkInstance instance,
-                         VkSurfaceKHR *surface) {
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                         VkSurfaceKHR *vk_surface) {
   SDL_Window *window = user;
 
-  if (!SDL_Vulkan_CreateSurface(window, instance, surface))
+  if (!SDL_Vulkan_CreateSurface(window, instance, vk_surface))
     return VK_ERROR_INITIALIZATION_FAILED;
 
   return VK_SUCCESS;
@@ -38,6 +38,7 @@ static void _get_framebuffer_size(void *user, uint32_t *width,
 }
 
 int main(void) {
+
   if (SDL_Init(SDL_INIT_VIDEO) != 0)
     return EXIT_FAILURE;
 
@@ -63,6 +64,7 @@ int main(void) {
   }
 
   instance_extensions = calloc(count, sizeof(*instance_extensions));
+
   if (!instance_extensions) {
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -83,14 +85,17 @@ int main(void) {
    * presentation system. This is preferred for simple usecases like a window.
    * For more complex usecases, like a wayland compositor managing its own
    * DRM/GBM handles, use RN_VK_TARGET_EXTERNAL. */
+
   const struct rn_vk_init_options_t vk = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform = {
-          .user = window,
-          .instance_extensions = _extensions,
-          .create_surface = _surface,
-          .framebuffer_size = _get_framebuffer_size,
-      },
+      .user = window,
+      .instance_extensions = _extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = window,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _get_framebuffer_size,
   };
 
   struct rn_init_options_t options = {
@@ -101,7 +106,7 @@ int main(void) {
   uint32_t width = 0, height = 0;
   _get_framebuffer_size(window, &width, &height);
 
-  struct rn_state_t *state = rn_state_init(&options, width, height);
+  struct rn_state_t *state = rn_state_init(&options);
 
   if (!state) {
     free(instance_extensions);
@@ -110,6 +115,18 @@ int main(void) {
     return EXIT_FAILURE;
   }
 
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    free(instance_extensions);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return EXIT_FAILURE;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
+
   bool running = true;
   bool failed = false;
 
@@ -117,6 +134,7 @@ int main(void) {
     SDL_Event event;
 
     while (SDL_PollEvent(&event)) {
+
       if (event.type == SDL_QUIT)
         running = false;
     }

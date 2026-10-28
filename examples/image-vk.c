@@ -18,8 +18,8 @@
 #define IMAGE_SPEED 120.0f
 
 static const char *const *_instance_extensions(void *user, uint32_t *count);
-static VkResult _create_surface(void *user, VkInstance instance,
-                                VkSurfaceKHR *out_surface);
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface);
 static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height);
 static void _resize_cb(GLFWwindow *window, int width, int height);
 
@@ -29,11 +29,11 @@ static const char *const *_instance_extensions(void *user, uint32_t *count) {
   return glfwGetRequiredInstanceExtensions(count);
 }
 
-static VkResult _create_surface(void *user, VkInstance instance,
-                                VkSurfaceKHR *out_surface) {
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface) {
   GLFWwindow *window = user;
 
-  return glfwCreateWindowSurface(instance, window, NULL, out_surface);
+  return glfwCreateWindowSurface(instance, window, NULL, out_vk_surface);
 }
 
 static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height) {
@@ -66,7 +66,9 @@ int main(int argc, char **argv) {
 
   GLFWwindow *window = NULL;
   struct rn_state_t *state = NULL;
+
   struct rn_image_t image = {0};
+
   bool image_uploaded = false;
   bool glfw_initialized = false;
   int exit_code = EXIT_FAILURE;
@@ -109,15 +111,17 @@ int main(int argc, char **argv) {
    * presentation system. This is preferred for simple usecases like a window.
    * For more complex usecases, like a wayland compositor managing its own
    * DRM/GBM handles, use RN_VK_TARGET_EXTERNAL. */
+
   const struct rn_vk_init_options_t vk_options = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform =
-          {
-              .user = window,
-              .instance_extensions = _instance_extensions,
-              .create_surface = _create_surface,
-              .framebuffer_size = _framebuffer_size,
-          },
+      .user = window,
+      .instance_extensions = _instance_extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = window,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _framebuffer_size,
   };
 
   const struct rn_init_options_t options = {
@@ -130,12 +134,23 @@ int main(int argc, char **argv) {
           },
   };
 
-  state = rn_state_init(&options, framebuffer_width, framebuffer_height);
+  state = rn_state_init(&options);
 
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
     goto cleanup;
   }
+
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    state = NULL;
+    fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
+    goto cleanup;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
 
   glfwSetWindowUserPointer(window, state);
 
@@ -176,7 +191,9 @@ int main(int argc, char **argv) {
 
   const float image_height =
       IMAGE_WIDTH * (float)pixel_height / (float)pixel_width;
+
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 1.0f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   while (!glfwWindowShouldClose(window)) {
@@ -240,17 +257,18 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Runara drawing failed (error %d)\n", (int)result);
       goto cleanup;
     }
-
     /* rn_end() submits the Vulkan commands and presents the swapchain. */
   }
 
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (window)
     glfwSetWindowUserPointer(window, NULL);
 
   if (state) {
+
     if (image_uploaded)
       rn_texture_release(state, &image);
 

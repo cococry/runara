@@ -71,10 +71,10 @@ static const char *const *_instance_extensions(void *user, uint32_t *count) {
   return glfwGetRequiredInstanceExtensions(count);
 }
 
-static VkResult _create_surface(void *user, VkInstance instance,
-                                VkSurfaceKHR *out_surface) {
+static VkResult _create_vk_surface(void *user, VkInstance instance,
+                                VkSurfaceKHR *out_vk_surface) {
   return glfwCreateWindowSurface(instance, (GLFWwindow *)user, NULL,
-                                 out_surface);
+                                 out_vk_surface);
 }
 
 static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height) {
@@ -88,6 +88,7 @@ static void _framebuffer_size(void *user, uint32_t *width, uint32_t *height) {
 
 static void _resize_cb(GLFWwindow *window, int width, int height) {
   struct rn_state_t *state = glfwGetWindowUserPointer(window);
+
   if (!state || width <= 0 || height <= 0)
     return;
 
@@ -95,6 +96,7 @@ static void _resize_cb(GLFWwindow *window, int width, int height) {
       .width = (uint32_t)width,
       .height = (uint32_t)height,
   };
+
   rn_canvas_set_bounds(state, &bounds);
 }
 
@@ -127,6 +129,7 @@ static bool load_image(struct rn_state_t *state, const char *path,
             (int)result);
     return false;
   }
+
   return true;
 }
 
@@ -136,8 +139,11 @@ int main(int argc, char **argv) {
 
   GLFWwindow *window = NULL;
   struct rn_state_t *state = NULL;
+
   struct rn_image_t image = {0};
+
   struct rn_image_t image2 = {0};
+
   bool image_uploaded = false;
   bool image2_uploaded = false;
   int exit_code = EXIT_FAILURE;
@@ -155,15 +161,18 @@ int main(int argc, char **argv) {
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT,
                             "Runara Vulkan rounded images", NULL, NULL);
+
   if (!window) {
     fprintf(stderr, "Failed to create GLFW window\n");
     goto cleanup;
   }
+
   glfwSetFramebufferSizeCallback(window, _resize_cb);
 
   uint32_t framebuffer_width = 0;
   uint32_t framebuffer_height = 0;
   _framebuffer_size(window, &framebuffer_width, &framebuffer_height);
+
   if (!framebuffer_width || !framebuffer_height) {
     fprintf(stderr, "Cannot initialize Vulkan with a zero-sized framebuffer\n");
     goto cleanup;
@@ -171,13 +180,14 @@ int main(int argc, char **argv) {
 
   const struct rn_vk_init_options_t vk_options = {
       .mode = RN_VK_TARGET_MANAGED,
-      .platform =
-          {
-              .user = window,
-              .instance_extensions = _instance_extensions,
-              .create_surface = _create_surface,
-              .framebuffer_size = _framebuffer_size,
-          },
+      .user = window,
+      .instance_extensions = _instance_extensions,
+  };
+
+  const struct rn_vk_surface_impl_t surface_impl = {
+      .user = window,
+      .create_vk_surface = _create_vk_surface,
+      .framebuffer_size = _framebuffer_size,
   };
 
   const struct rn_init_options_t options = {
@@ -187,15 +197,28 @@ int main(int argc, char **argv) {
       .shader_fragment_dedicated_src = _frag_dedicated,
   };
 
-  state = rn_state_init(&options, framebuffer_width, framebuffer_height);
+  state = rn_state_init(&options);
+
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
     goto cleanup;
   }
+
+  struct rn_vk_managed_surface_t *managed_surface = NULL;
+
+  if (rn_vk_surface_create(state, &surface_impl, &managed_surface) != RN_OK) {
+    rn_state_fini(state);
+    state = NULL;
+    fprintf(stderr, "Failed to initialize Runara Vulkan backend\n");
+    goto cleanup;
+  }
+
+  rn_vk_surface_set_current(state, managed_surface);
   glfwSetWindowUserPointer(window, state);
 
   int pixel_width = 0, pixel_height = 0;
   int pixel2_width = 0, pixel2_height = 0;
+
   if (!load_image(state, image_path, &image, &pixel_width, &pixel_height))
     goto cleanup;
   image_uploaded = true;
@@ -208,15 +231,19 @@ int main(int argc, char **argv) {
       IMAGE_WIDTH * (float)pixel_height / (float)pixel_width;
   const float image2_height =
       IMAGE_WIDTH * (float)pixel2_height / (float)pixel2_width;
+
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 0.8f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
+
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
       glfwSetWindowShouldClose(window, GLFW_TRUE);
 
     _framebuffer_size(window, &framebuffer_width, &framebuffer_height);
+
     if (!framebuffer_width || !framebuffer_height) {
       glfwWaitEvents();
       continue;
@@ -226,15 +253,18 @@ int main(int argc, char **argv) {
         .width = framebuffer_width,
         .height = framebuffer_height,
     };
+
     rn_canvas_set_bounds(state, &bounds);
 
     const float available_width = (float)framebuffer_width + IMAGE_WIDTH;
     float image_x = (float)glfwGetTime() * IMAGE_SPEED;
+
     while (image_x >= available_width)
       image_x -= available_width;
     image_x -= IMAGE_WIDTH;
 
     rn_result_t result = rn_begin(state);
+
     if (result != RN_OK) {
       fprintf(stderr, "rn_begin failed (error %d)\n", (int)result);
       goto cleanup;
@@ -250,6 +280,7 @@ int main(int argc, char **argv) {
       const bool use_image2 = (i % 2) != 0;
       struct rn_image_t *current_image = use_image2 ? &image2 : &image;
       const float current_height = use_image2 ? image2_height : image_height;
+
       const struct rn_rect_t rect = {
           .x = image_x + (float)i * 20.0f,
           .y = ((float)framebuffer_height - current_height) * 0.5f +
@@ -257,12 +288,15 @@ int main(int argc, char **argv) {
           .width = IMAGE_WIDTH,
           .height = current_height,
       };
+
       result = rn_draw_texture(state, current_image, rect, white);
     }
 
     rn_result_t end_result = rn_end(state);
+
     if (result == RN_OK)
       result = end_result;
+
     if (result != RN_OK) {
       fprintf(stderr, "Runara drawing failed (error %d)\n", (int)result);
       goto cleanup;
@@ -273,15 +307,20 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (window)
     glfwSetWindowUserPointer(window, NULL);
+
   if (state) {
+
     if (image2_uploaded)
       rn_texture_release(state, &image2);
+
     if (image_uploaded)
       rn_texture_release(state, &image);
     rn_state_fini(state);
   }
+
   if (window)
     glfwDestroyWindow(window);
   glfwTerminate();

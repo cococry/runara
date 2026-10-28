@@ -26,6 +26,7 @@ static void *_gl_load_proc(const char *name);
 static double _elapsed_seconds(const struct timespec *start);
 
 static void *_gl_load_proc(const char *name) {
+
   union {
     __GLXextFuncPtr function;
     void *pointer;
@@ -52,6 +53,7 @@ int main(int argc, char **argv) {
   XVisualInfo *visual = NULL;
   GLXFBConfig *configs = NULL;
   struct rn_state_t *state = NULL;
+
   struct rn_image_t image = {0};
 
   bool image_uploaded = false;
@@ -62,12 +64,14 @@ int main(int argc, char **argv) {
   Atom wm_delete;
 
   display = XOpenDisplay(NULL);
+
   if (!display) {
     fprintf(stderr, "Failed to open X11 display\n");
     return EXIT_FAILURE;
   }
 
   const int screen = DefaultScreen(display);
+
   const int fb_attributes[] = {
       GLX_X_RENDERABLE,
       True,
@@ -92,6 +96,7 @@ int main(int argc, char **argv) {
 
   int config_count = 0;
   configs = glXChooseFBConfig(display, screen, fb_attributes, &config_count);
+
   if (!configs || config_count <= 0) {
     fprintf(stderr, "No suitable GLX framebuffer configuration\n");
     goto cleanup;
@@ -99,6 +104,7 @@ int main(int argc, char **argv) {
 
   GLXFBConfig config = configs[0];
   visual = glXGetVisualFromFBConfig(display, config);
+
   if (!visual) {
     fprintf(stderr, "Failed to get GLX visual\n");
     goto cleanup;
@@ -106,12 +112,14 @@ int main(int argc, char **argv) {
 
   colormap = XCreateColormap(display, RootWindow(display, screen),
                              visual->visual, AllocNone);
+
   if (colormap == None) {
     fprintf(stderr, "Failed to create X11 colormap\n");
     goto cleanup;
   }
 
   XSetWindowAttributes window_attributes = {0};
+
   window_attributes.colormap = colormap;
   window_attributes.event_mask =
       StructureNotifyMask | KeyPressMask | ExposureMask;
@@ -120,6 +128,7 @@ int main(int argc, char **argv) {
                          WINDOW_WIDTH, WINDOW_HEIGHT, 0, visual->depth,
                          InputOutput, visual->visual, CWColormap | CWEventMask,
                          &window_attributes);
+
   if (window == None) {
     fprintf(stderr, "Failed to create X11 window\n");
     goto cleanup;
@@ -149,6 +158,7 @@ int main(int argc, char **argv) {
   };
 
   context = create_context(display, config, NULL, True, context_attributes);
+
   if (!context) {
     fprintf(stderr, "Failed to create OpenGL 3.3 core context\n");
     goto cleanup;
@@ -165,6 +175,7 @@ int main(int argc, char **argv) {
   glx_swap_interval_ext_fn swap_interval =
       (glx_swap_interval_ext_fn)glXGetProcAddressARB(
           (const GLubyte *)"glXSwapIntervalEXT");
+
   if (swap_interval)
     swap_interval(display, window, 1);
 
@@ -174,7 +185,8 @@ int main(int argc, char **argv) {
       .log = {.verbose = true, .logfile = true},
   };
 
-  state = rn_state_init(&options, WINDOW_WIDTH, WINDOW_HEIGHT);
+  state = rn_state_init(&options);
+
   if (!state) {
     fprintf(stderr, "Failed to initialize Runara\n");
     goto cleanup;
@@ -209,13 +221,17 @@ int main(int argc, char **argv) {
 
   const float image_height =
       IMAGE_WIDTH * (float)pixel_height / (float)pixel_width;
+
   const struct rn_color_t white = {1.0f, 1.0f, 1.0f, 1.0f};
+
   const struct rn_color_t background = {0.08f, 0.09f, 0.12f, 1.0f};
 
   struct timespec start = {0};
+
   clock_gettime(CLOCK_MONOTONIC, &start);
 
   while (running) {
+
     while (XPending(display)) {
       XEvent event;
       XNextEvent(display, &event);
@@ -223,18 +239,22 @@ int main(int argc, char **argv) {
       if (event.type == ClientMessage &&
           (Atom)event.xclient.data.l[0] == wm_delete) {
         running = false;
+
       } else if (event.type == KeyPress &&
                  XLookupKeysym(&event.xkey, 0) == XK_Escape) {
         running = false;
+
       } else if (event.type == ConfigureNotify) {
         width = event.xconfigure.width;
         height = event.xconfigure.height;
 
         if (width > 0 && height > 0) {
+
           struct rn_box_u32_t bounds = {
               .width = (uint32_t)width,
               .height = (uint32_t)height,
           };
+
           rn_canvas_set_bounds(state, &bounds);
         }
       }
@@ -262,6 +282,7 @@ int main(int argc, char **argv) {
     };
 
     result = rn_begin(state);
+
     if (result != RN_OK) {
       fprintf(stderr, "rn_begin failed (error %d)\n", (int)result);
       goto cleanup;
@@ -275,6 +296,7 @@ int main(int argc, char **argv) {
       result = rn_draw_texture(state, &image, image_rect, white);
 
     rn_result_t end_result = rn_end(state);
+
     if (result == RN_OK)
       result = end_result;
 
@@ -289,23 +311,30 @@ int main(int argc, char **argv) {
   exit_code = EXIT_SUCCESS;
 
 cleanup:
+
   if (state) {
+
     if (image_uploaded)
       rn_texture_release(state, &image);
     rn_state_fini(state);
   }
 
   if (display) {
+
     if (context) {
       glXMakeCurrent(display, None, NULL);
       glXDestroyContext(display, context);
     }
+
     if (window != None)
       XDestroyWindow(display, window);
+
     if (colormap != None)
       XFreeColormap(display, colormap);
+
     if (visual)
       XFree(visual);
+
     if (configs)
       XFree(configs);
     XCloseDisplay(display);

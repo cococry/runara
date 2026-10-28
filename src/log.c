@@ -50,10 +50,12 @@ static bool _log_mkdirs(const char *path) {
   char buf[PATH_MAX];
 
   int n = snprintf(buf, sizeof(buf), "%s", path);
+
   if (n < 0 || (size_t)n >= sizeof(buf))
     return false;
 
   for (char *p = buf + 1; *p; p++) {
+
     if (*p != '/')
       continue;
 
@@ -74,7 +76,9 @@ static bool _log_mkdirs(const char *path) {
 
 static void _log_header(FILE *stream, enum rn_log_level_t level) {
   time_t now = time(NULL);
+
   struct tm tm = {0};
+
   char timebuf[9] = "00:00:00";
 
   if (localtime_r(&now, &tm))
@@ -96,8 +100,10 @@ void rn_log_write_cb_default(FILE *stream, enum rn_log_level_t level,
 
   if (level == RN_LL_INFO) {
     fprintf(stream, "%s: ", subsystem);
+
   } else if (level == RN_LL_TRACE) {
     fprintf(stream, "%s: %s: ", subsystem, function);
+
   } else {
     fprintf(stream, "%s: %s (%s:%d): ", subsystem, function, file, line);
   }
@@ -110,6 +116,7 @@ void rn_log_write_cb_default(FILE *stream, enum rn_log_level_t level,
 void rn_log_emit(const struct rn_log_t *log, enum rn_log_level_t level,
                  const char *subsystem, const char *function, const char *file,
                  int line, const char *fmt, ...) {
+
   if (!log || !log->write_cb || level < RN_LL_TRACE || level >= RN_LL_COUNT)
     return;
 
@@ -169,6 +176,7 @@ char *rn_log_get_filepath(void) {
   char fallback[PATH_MAX];
 
   if (!state_home || !*state_home) {
+
     if (!home || !*home)
       return NULL;
 
@@ -191,7 +199,9 @@ char *rn_log_get_filepath(void) {
     return NULL;
 
   time_t now = time(NULL);
+
   struct tm tm = {0};
+
   char timestamp[32];
 
   if (!localtime_r(&now, &tm))

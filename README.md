@@ -66,7 +66,7 @@ int main(void) {
       .gl_load_proc = _gl_load_proc,
   };
 
-  state = rn_state_init(&options, 800, 600);
+  state = rn_state_init(&options);
 
   if (!state) {
     glfwDestroyWindow(window);
