@@ -5,6 +5,7 @@
 Runara is a high level abstraction over both Vulkan and OpenGL that renders and manages 2D textures and rectangles. 
 It implements an instanced batch renderer that efficiently draws queued lists of textures and rectangles in an immediate-mode
 manner. One can upload texture data into Runara's managed texture atlas or to directly to a dedicated texture.  
+
 ---
 
 <br>
