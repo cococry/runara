@@ -25,8 +25,8 @@
 
 #define RN_SUBSYS_NAME "BACKEND"
 
-bool rn_backend_implement(struct rn_backend_impl_t *impl,
-                          enum rn_backend_type_t type,
+bool rn_backend_implement(struct rn_backend_impl_t    *impl,
+                          enum rn_backend_type_t       type,
                           const struct rn_allocator_t *alloc,
                           const struct rn_log_t *log, const void *backend_info,
                           const char *frag_dedicated, const char *frag_atlas) {
@@ -59,8 +59,8 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
   }
 }
 
-void rn_backend_fini(struct rn_backend_impl_t *impl,
-                     enum rn_backend_type_t type,
+void rn_backend_fini(struct rn_backend_impl_t    *impl,
+                     enum rn_backend_type_t       type,
                      const struct rn_allocator_t *alloc) {
 
   if (!impl || !alloc)

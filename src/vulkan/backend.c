@@ -282,8 +282,8 @@ static rn_result_t _set_uniform_2f(void                *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float x, float y);
 static rn_result_t
-_draw_indexed_instanced(void                                     *backend_ctx,
-                        const struct rn_draw_indexed_instanced_t *draw);
+                   _draw_indexed_instanced(void                                     *backend_ctx,
+                                           const struct rn_draw_indexed_instanced_t *draw);
 static rn_result_t _create_texture(void                           *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *pixels, size_t size,
@@ -293,17 +293,17 @@ _create_texture_array(void                                 *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
                       rn_texture_handle_t                  *out);
 static rn_result_t
-_write_texture_array_layer(void                                  *backend_ctx,
-                           const struct rn_texture_array_write_t *write,
-                           const void *pixels, size_t size);
+            _write_texture_array_layer(void                                  *backend_ctx,
+                                       const struct rn_texture_array_write_t *write,
+                                       const void *pixels, size_t size);
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle);
 static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
                                 rn_texture_handle_t handle);
 static rn_result_t _begin_upload(struct rn_vk_context *ctx);
 static rn_result_t _end_upload(struct rn_vk_context *ctx);
-static void _image_barrier(struct rn_vk_context *ctx, VkImage image,
-                           VkImageLayout old_layout, VkImageLayout new_layout,
-                           uint32_t layers);
+static void        _image_barrier(struct rn_vk_context *ctx, VkImage image,
+                                  VkImageLayout old_layout, VkImageLayout new_layout,
+                                  uint32_t layers);
 static rn_result_t _upload_image(struct rn_vk_context *ctx,
                                  struct rn_vk_texture *texture, uint32_t layer,
                                  uint32_t x, uint32_t y, uint32_t width,
@@ -2676,8 +2676,8 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
   const VmaAllocationCreateInfo allocation_info = {
       .usage = VMA_MEMORY_USAGE_GPU_ONLY};
 
-  VkResult status = vmaCreateImage(ctx->vma, &image_info, &allocation_info,
-                                   &texture.image, &texture.allocation, NULL);
+  VkResult    status = vmaCreateImage(ctx->vma, &image_info, &allocation_info,
+                                      &texture.image, &texture.allocation, NULL);
   rn_result_t result = _result(ctx, status, "vmaCreateImage");
 
   if (result != RN_OK)

@@ -44,33 +44,33 @@ typedef enum rn_buffer_usage_t {
 
 struct rn_buffer_desc_t {
   rn_buffer_target_t target;
-  rn_buffer_usage_t usage;
-  size_t size;
-  const void *data;
+  rn_buffer_usage_t  usage;
+  size_t             size;
+  const void        *data;
 };
 
 typedef enum rn_texture_format_t { RN_TEXTURE_RGBA8 } rn_texture_format_t;
 
 struct rn_texture_desc_t {
-  uint32_t width;
-  uint32_t height;
+  uint32_t            width;
+  uint32_t            height;
   rn_texture_format_t format;
 };
 
 struct rn_texture_array_desc_t {
-  uint32_t width;
-  uint32_t height;
-  uint32_t layers;
+  uint32_t            width;
+  uint32_t            height;
+  uint32_t            layers;
   rn_texture_format_t format;
 };
 
 struct rn_texture_array_write_t {
   rn_texture_handle_t texture;
-  uint32_t x;
-  uint32_t y;
-  uint32_t layer;
-  uint32_t width;
-  uint32_t height;
+  uint32_t            x;
+  uint32_t            y;
+  uint32_t            layer;
+  uint32_t            width;
+  uint32_t            height;
 };
 
 enum rn_shader_pipeline_t {
@@ -83,17 +83,17 @@ enum rn_vertex_format_t { RN_VERTEX_FLOAT32X2, RN_VERTEX_FLOAT32X4 };
 enum rn_vertex_step_mode_t { RN_STEP_VERTEX, RN_STEP_INSTANCE };
 
 struct rn_vertex_attribute_t {
-  uint32_t location;
-  uint32_t offset;
+  uint32_t                location;
+  uint32_t                offset;
   enum rn_vertex_format_t format;
 };
 
 struct rn_vertex_buffer_layout_t {
-  uint32_t binding;
-  uint32_t stride;
-  enum rn_vertex_step_mode_t step_mode;
+  uint32_t                            binding;
+  uint32_t                            stride;
+  enum rn_vertex_step_mode_t          step_mode;
   const struct rn_vertex_attribute_t *attributes;
-  size_t attribute_count;
+  size_t                              attribute_count;
 };
 
 enum rn_uniform_type_t {
@@ -105,11 +105,11 @@ enum rn_uniform_type_t {
 enum rn_shader_stage_t { RN_SHADER_VERTEX, RN_SHADER_FRAGMENT };
 
 struct rn_uniform_binding_t {
-  const char *name;
+  const char            *name;
   enum rn_uniform_type_t type;
   enum rn_shader_stage_t stage;
-  uint32_t binding;
-  float f_data[4];
+  uint32_t               binding;
+  float                  f_data[4];
 };
 
 enum rn_blend_mode_t {
@@ -120,20 +120,20 @@ enum rn_blend_mode_t {
 
 struct rn_pipeline_desc_t {
   enum rn_shader_pipeline_t shader;
-  enum rn_blend_mode_t blend;
-  bool depth_test;
+  enum rn_blend_mode_t      blend;
+  bool                      depth_test;
 
   const struct rn_vertex_buffer_layout_t *vertex_bindings;
-  size_t vertex_binding_count;
+  size_t                                  vertex_binding_count;
 
   const struct rn_uniform_binding_t *uniform_bindings;
-  size_t uniform_binding_count;
+  size_t                             uniform_binding_count;
 };
 
 struct rn_draw_indexed_instanced_t {
   uint32_t index_count;
   uint32_t index_offset;
-  int32_t vertex_offset;
+  int32_t  vertex_offset;
   uint32_t instance_count;
   uint32_t instance_offset;
 };
@@ -162,9 +162,9 @@ struct rn_backend_impl_t {
                               size_t size);
 
   /* Pipelines */
-  rn_result_t (*create_pipeline)(void *ctx,
+  rn_result_t (*create_pipeline)(void                            *ctx,
                                  const struct rn_pipeline_desc_t *desc,
-                                 rn_pipeline_handle_t *out);
+                                 rn_pipeline_handle_t            *out);
 
   void (*destroy_pipeline)(void *ctx, rn_pipeline_handle_t pipeline);
 
@@ -204,40 +204,40 @@ struct rn_backend_impl_t {
                              rn_texture_handle_t texture);
 };
 
-bool rn_backend_implement(struct rn_backend_impl_t *impl,
-                          enum rn_backend_type_t type,
+bool rn_backend_implement(struct rn_backend_impl_t    *impl,
+                          enum rn_backend_type_t       type,
                           const struct rn_allocator_t *alloc,
                           const struct rn_log_t *log, const void *backend_info,
                           const char *frag_dedicated, const char *frag_atlas);
 
 #if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
-bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
+bool rn_gl_backend_implement(struct rn_backend_impl_t    *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log,
-                             const void *backend_info,
-                             const char *frag_dedicated,
-                             const char *frag_atlas);
+                             const struct rn_log_t       *log,
+                             const void                  *backend_info,
+                             const char                  *frag_dedicated,
+                             const char                  *frag_atlas);
 #endif
 
 #if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
-bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
+bool rn_vk_backend_implement(struct rn_backend_impl_t    *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log,
-                             const void *backend_info,
-                             const char *frag_dedicated,
-                             const char *frag_atlas);
+                             const struct rn_log_t       *log,
+                             const void                  *backend_info,
+                             const char                  *frag_dedicated,
+                             const char                  *frag_atlas);
 #endif
 
-void rn_backend_fini(struct rn_backend_impl_t *impl,
-                     enum rn_backend_type_t type,
+void rn_backend_fini(struct rn_backend_impl_t    *impl,
+                     enum rn_backend_type_t       type,
                      const struct rn_allocator_t *alloc);
 
 #if defined(RN_HAS_OPENGL) && RN_HAS_OPENGL
-void rn_gl_backend_fini(struct rn_backend_impl_t *impl,
+void rn_gl_backend_fini(struct rn_backend_impl_t    *impl,
                         const struct rn_allocator_t *alloc);
 #endif
 
 #if defined(RN_HAS_VULKAN) && RN_HAS_VULKAN
-void rn_vk_backend_fini(struct rn_backend_impl_t *impl,
+void rn_vk_backend_fini(struct rn_backend_impl_t    *impl,
                         const struct rn_allocator_t *alloc);
 #endif

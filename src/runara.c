@@ -29,11 +29,11 @@
 
 #define RN_SUBSYS_NAME "CORE"
 
-static void *_default_alloc(size_t size, void *ctx);
-static void *_default_realloc(void *ptr, size_t size, void *ctx);
-static void _default_free(void *ptr, void *ctx);
-static void _log_init(struct rn_state_t *state,
-                      const struct rn_log_options_t *log_opts);
+static void       *_default_alloc(size_t size, void *ctx);
+static void       *_default_realloc(void *ptr, size_t size, void *ctx);
+static void        _default_free(void *ptr, void *ctx);
+static void        _log_init(struct rn_state_t             *state,
+                             const struct rn_log_options_t *log_opts);
 static const char *_backend_type_to_str(enum rn_backend_type_t type);
 
 static void *_default_alloc(size_t size, void *ctx) {
@@ -51,7 +51,7 @@ static void _default_free(void *ptr, void *ctx) {
   free(ptr);
 }
 
-static void _log_init(struct rn_state_t *state,
+static void _log_init(struct rn_state_t             *state,
                       const struct rn_log_options_t *log_opts) {
   assert(state && log_opts);
 
@@ -64,7 +64,7 @@ static void _log_init(struct rn_state_t *state,
 
   if (log_opts->logfile && !log_opts->log_stream) {
     const char *path = rn_log_get_filepath();
-    FILE *stream = path ? fopen(path, "a") : NULL;
+    FILE       *stream = path ? fopen(path, "a") : NULL;
 
     if (stream) {
       RN_INFO(state->log, "Logging to logfile '%s'", path);
