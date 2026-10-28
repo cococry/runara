@@ -38,10 +38,10 @@
 #include <string.h>
 #include <vk_mem_alloc.h>
 
-#define RN_SUBSYS_NAME "VULKAN"
-#define RN_VK_MAX_BINDINGS 8u
-#define RN_VK_FRAMES_IN_FLIGHT 3u
-#define RN_VK_MAX_TEXTURES 16u
+#define RN_SUBSYS_NAME             "VULKAN"
+#define RN_VK_MAX_BINDINGS         8u
+#define RN_VK_FRAMES_IN_FLIGHT     3u
+#define RN_VK_MAX_TEXTURES         16u
 #define RN_VK_DESCRIPTOR_PAGE_SIZE 128u
 
 #define _VK_TRACE(log, ...)                                                    \
@@ -59,24 +59,24 @@
   } while (0)
 
 struct rn_vk_buffer {
-  VkBuffer buffer;
-  VmaAllocation allocation;
-  void *mapped;
-  VkDeviceSize size;
-  VkDeviceSize frame_stride;
+  VkBuffer                buffer;
+  VmaAllocation           allocation;
+  void                   *mapped;
+  VkDeviceSize            size;
+  VkDeviceSize            frame_stride;
   enum rn_buffer_target_t target;
-  bool alive;
+  bool                    alive;
 };
 
 struct rn_vk_texture {
-  VkImage image;
-  VkImageView view;
-  VkSampler sampler;
-  VmaAllocation allocation;
-  uint32_t width, height, layers;
-  bool array;
-  bool borrowed;
-  bool alive;
+  VkImage                    image;
+  VkImageView                view;
+  VkSampler                  sampler;
+  VmaAllocation              allocation;
+  uint32_t                   width, height, layers;
+  bool                       array;
+  bool                       borrowed;
+  bool                       alive;
   bool                       dmabuf, acquired;
   VkDeviceMemory             dmabuf_memory;
   int                        dmabuf_fd;
@@ -85,81 +85,81 @@ struct rn_vk_texture {
 };
 
 struct rn_vk_descriptor_page {
-  VkDescriptorPool pool;
-  uint32_t used;
+  VkDescriptorPool              pool;
+  uint32_t                      used;
   struct rn_vk_descriptor_page *next;
 };
 
 struct rn_vk_descriptor_entry {
-  VkDescriptorSet set;
-  rn_texture_handle_t textures[RN_VK_MAX_TEXTURES];
-  uint32_t count;
+  VkDescriptorSet                set;
+  rn_texture_handle_t            textures[RN_VK_MAX_TEXTURES];
+  uint32_t                       count;
   struct rn_vk_descriptor_entry *next;
 };
 
 struct rn_vk_descriptor_cache {
-  struct rn_vk_descriptor_page *pages;
+  struct rn_vk_descriptor_page  *pages;
   struct rn_vk_descriptor_entry *entries;
   struct rn_vk_descriptor_entry *unused;
 };
 
 struct rn_vk_pipeline {
-  VkPipeline pipeline;
-  VkPipelineLayout layout;
-  VkDescriptorSetLayout set_layout;
+  VkPipeline                    pipeline;
+  VkPipelineLayout              layout;
+  VkDescriptorSetLayout         set_layout;
   struct rn_vk_descriptor_cache descriptors[RN_VK_FRAMES_IN_FLIGHT];
-  enum rn_shader_pipeline_t shader;
-  uint32_t descriptor_count;
-  uint32_t strides[RN_VK_MAX_BINDINGS];
-  bool alive;
+  enum rn_shader_pipeline_t     shader;
+  uint32_t                      descriptor_count;
+  uint32_t                      strides[RN_VK_MAX_BINDINGS];
+  bool                          alive;
 };
 
 struct rn_vk_external_target {
-  VkImage image;
-  VkImageView view;
+  VkImage       image;
+  VkImageView   view;
   VkFramebuffer framebuffer;
-  VkExtent2D extent;
-  VkFence render_fence;
-  bool alive;
-  bool used;
+  VkExtent2D    extent;
+  VkFence       render_fence;
+  bool          alive;
+  bool          used;
 };
 
 struct rn_vk_swap_image {
-  VkImageView view;
+  VkImageView   view;
   VkFramebuffer framebuffer;
-  VkSemaphore render_done;
+  VkSemaphore   render_done;
 };
 
 struct rn_vk_managed_surface_t {
-  VkSurfaceKHR vk_surface;
-  VkSwapchainKHR swapchain;
-  VkQueue present_queue;
-  uint32_t present_family;
-  VkExtent2D swap_extent;
-  struct rn_vk_swap_image *swap_images;
-  uint32_t swap_image_count;
-  uint32_t image_index;
-  uint32_t requested_width, requested_height;
-  bool resize_pending;
-  struct rn_vk_surface_impl_t impl;
+  VkSurfaceKHR                    vk_surface;
+  VkSwapchainKHR                  swapchain;
+  VkQueue                         present_queue;
+  uint32_t                        present_family;
+  VkExtent2D                      swap_extent;
+  struct rn_vk_swap_image        *swap_images;
+  uint32_t                        swap_image_count;
+  uint32_t                        image_index;
+  uint32_t                        requested_width, requested_height;
+  bool                            resize_pending;
+  struct rn_vk_surface_impl_t     impl;
   struct rn_vk_managed_surface_t *next;
 };
 
 struct rn_vk_frame {
-  VkCommandPool pool;
+  VkCommandPool   pool;
   VkCommandBuffer command;
-  VkSemaphore image_available;
-  VkFence fence;
+  VkSemaphore     image_available;
+  VkFence         fence;
 };
 
 struct rn_vk_context {
-  enum rn_vk_target_mode_t mode;
-  struct rn_vk_init_options_t config;
+  enum rn_vk_target_mode_t      mode;
+  struct rn_vk_init_options_t   config;
   struct rn_vk_external_target *external_targets;
-  size_t external_target_count;
-  rn_vk_target_handle_t active_target;
-  VkExtent2D frame_extent;
-  bool frame_submitted;
+  size_t                        external_target_count;
+  rn_vk_target_handle_t         active_target;
+  VkExtent2D                    frame_extent;
+  bool                          frame_submitted;
 
   VkInstance instance;
 
@@ -169,22 +169,22 @@ struct rn_vk_context {
 
   uint32_t queue_family_count;
   VkFormat swap_format;
-  bool fatal;
-  bool tearing_down;
+  bool     fatal;
+  bool     tearing_down;
 
   struct rn_vk_frame frames[RN_VK_FRAMES_IN_FLIGHT];
-  uint32_t frame_index;
+  uint32_t           frame_index;
 
-  VkPhysicalDevice physical_device;
-  VkDevice device;
-  VkQueue queue;
-  uint32_t queue_family;
-  VkRenderPass render_pass;
-  VkCommandBuffer command_buffer;
-  VkCommandPool upload_pool;
-  VkCommandBuffer upload_command;
-  VkFence upload_fence;
-  VmaAllocator vma;
+  VkPhysicalDevice                            physical_device;
+  VkDevice                                    device;
+  VkQueue                                     queue;
+  uint32_t                                    queue_family;
+  VkRenderPass                                render_pass;
+  VkCommandBuffer                             command_buffer;
+  VkCommandPool                               upload_pool;
+  VkCommandBuffer                             upload_command;
+  VkFence                                     upload_fence;
+  VmaAllocator                                vma;
   VkBuffer                                    staging;
   VmaAllocation                               staging_allocation;
   void                                       *staging_map;
@@ -197,24 +197,24 @@ struct rn_vk_context {
   PFN_vkGetPhysicalDeviceFormatProperties2KHR format_properties;
   PFN_vkGetPhysicalDeviceImageFormatProperties2KHR image_properties;
   PFN_vkGetMemoryFdPropertiesKHR                   fd_properties;
-  VkPhysicalDeviceProperties properties;
+  VkPhysicalDeviceProperties                       properties;
 
-  struct rn_vk_buffer *buffers;
-  size_t buffer_count;
-  struct rn_vk_texture *textures;
-  size_t texture_count;
+  struct rn_vk_buffer   *buffers;
+  size_t                 buffer_count;
+  struct rn_vk_texture  *textures;
+  size_t                 texture_count;
   struct rn_vk_pipeline *pipelines;
-  size_t pipeline_count;
+  size_t                 pipeline_count;
 
   rn_pipeline_handle_t pipeline;
-  rn_buffer_handle_t vertex_buffers[RN_VK_MAX_BINDINGS];
-  rn_buffer_handle_t index_buffer;
-  rn_texture_handle_t bound_textures[RN_VK_MAX_TEXTURES];
-  uint32_t extent_x, extent_y, extent_width, extent_height;
-  bool frame_active;
+  rn_buffer_handle_t   vertex_buffers[RN_VK_MAX_BINDINGS];
+  rn_buffer_handle_t   index_buffer;
+  rn_texture_handle_t  bound_textures[RN_VK_MAX_TEXTURES];
+  uint32_t             extent_x, extent_y, extent_width, extent_height;
+  bool                 frame_active;
 
   const struct rn_allocator_t *alloc;
-  const struct rn_log_t *log;
+  const struct rn_log_t       *log;
 
   const char *frag_dedicated;
   const char *frag_atlas;
@@ -239,61 +239,61 @@ static rn_result_t _result(struct rn_vk_context *ctx, VkResult status,
 static rn_result_t _create_instance(struct rn_vk_context *ctx);
 static rn_result_t _create_device(struct rn_vk_context *ctx);
 static rn_result_t _create_render_pass(struct rn_vk_context *ctx,
-                                       VkFormat format);
+                                       VkFormat              format);
 static struct rn_vk_external_target *
 _external_target(struct rn_vk_context *ctx, rn_vk_target_handle_t handle);
-static void _destroy_external_targets(struct rn_vk_context *ctx);
+static void        _destroy_external_targets(struct rn_vk_context *ctx);
 static rn_result_t _create_swapchain(struct rn_vk_context *ctx, uint32_t width,
                                      uint32_t height);
-static void _destroy_swapchain(struct rn_vk_context *ctx);
+static void        _destroy_swapchain(struct rn_vk_context *ctx);
 static rn_result_t _create_frame_commands(struct rn_vk_context *ctx);
-static void *_grow(struct rn_vk_context *ctx, void *array, size_t count,
-                   size_t item_size);
-static struct rn_vk_buffer *_buffer(struct rn_vk_context *ctx,
-                                    rn_buffer_handle_t handle);
-static struct rn_vk_texture *_texture(struct rn_vk_context *ctx,
-                                      rn_texture_handle_t handle);
+static void       *_grow(struct rn_vk_context *ctx, void *array, size_t count,
+                         size_t item_size);
+static struct rn_vk_buffer   *_buffer(struct rn_vk_context *ctx,
+                                      rn_buffer_handle_t    handle);
+static struct rn_vk_texture  *_texture(struct rn_vk_context *ctx,
+                                       rn_texture_handle_t   handle);
 static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
-                                        rn_pipeline_handle_t handle);
+                                        rn_pipeline_handle_t  handle);
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
 static rn_result_t _clear_color_buffer(void *backend_ctx);
 static rn_result_t _end_frame(void *backend_ctx);
-static rn_result_t _create_buffer(void *backend_ctx,
+static rn_result_t _create_buffer(void                          *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
-                                  rn_buffer_handle_t *out);
+                                  rn_buffer_handle_t            *out);
 static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle);
 static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
                                  uint32_t binding, size_t offset,
                                  const void *data, size_t size);
 static rn_result_t _create_pipeline(void *backend_ctx,
                                     const struct rn_pipeline_desc_t *desc,
-                                    rn_pipeline_handle_t *out);
+                                    rn_pipeline_handle_t            *out);
 static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle);
-static rn_result_t _set_pipeline(void *backend_ctx,
+static rn_result_t _set_pipeline(void                *backend_ctx,
                                  rn_pipeline_handle_t handle);
-static rn_result_t _set_vertex_buffer(void *backend_ctx,
+static rn_result_t _set_vertex_buffer(void              *backend_ctx,
                                       rn_buffer_handle_t handle,
-                                      uint32_t binding);
-static rn_result_t _set_index_buffer(void *backend_ctx,
+                                      uint32_t           binding);
+static rn_result_t _set_index_buffer(void              *backend_ctx,
                                      rn_buffer_handle_t handle);
-static rn_result_t _set_uniform_2f(void *backend_ctx,
+static rn_result_t _set_uniform_2f(void                *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float x, float y);
 static rn_result_t
-_draw_indexed_instanced(void *backend_ctx,
+_draw_indexed_instanced(void                                     *backend_ctx,
                         const struct rn_draw_indexed_instanced_t *draw);
-static rn_result_t _create_texture(void *backend_ctx,
+static rn_result_t _create_texture(void                           *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *pixels, size_t size,
                                    rn_texture_handle_t *out);
 static rn_result_t
-_create_texture_array(void *backend_ctx,
+_create_texture_array(void                                 *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
-                      rn_texture_handle_t *out);
+                      rn_texture_handle_t                  *out);
 static rn_result_t
-_write_texture_array_layer(void *backend_ctx,
+_write_texture_array_layer(void                                  *backend_ctx,
                            const struct rn_texture_array_write_t *write,
                            const void *pixels, size_t size);
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle);
@@ -314,9 +314,9 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
                                             uint32_t layers, bool array,
                                             const void *pixels, size_t size,
                                             rn_texture_handle_t *out);
-static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
+static rn_result_t _descriptor_for_draw(struct rn_vk_context  *ctx,
                                         struct rn_vk_pipeline *pipeline,
-                                        VkDescriptorSet *out);
+                                        VkDescriptorSet       *out);
 
 rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
                             uint32_t **spv, size_t *spv_size);
@@ -366,14 +366,14 @@ static void *_grow(struct rn_vk_context *ctx, void *array, size_t count,
 }
 
 static struct rn_vk_buffer *_buffer(struct rn_vk_context *ctx,
-                                    rn_buffer_handle_t handle) {
+                                    rn_buffer_handle_t    handle) {
   return handle < ctx->buffer_count && ctx->buffers[handle].alive
              ? &ctx->buffers[handle]
              : NULL;
 }
 
 static struct rn_vk_texture *_texture(struct rn_vk_context *ctx,
-                                      rn_texture_handle_t handle) {
+                                      rn_texture_handle_t   handle) {
   return handle < ctx->texture_count && ctx->textures[handle].alive
              ? &ctx->textures[handle]
              : NULL;
@@ -397,7 +397,7 @@ static rn_texture_handle_t _texture_slot(struct rn_vk_context *ctx) {
 }
 
 static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
-                                        rn_pipeline_handle_t handle) {
+                                        rn_pipeline_handle_t  handle) {
   return handle < ctx->pipeline_count && ctx->pipelines[handle].alive
              ? &ctx->pipelines[handle]
              : NULL;
@@ -405,8 +405,8 @@ static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
 
 static rn_result_t _create_instance(struct rn_vk_context *ctx) {
   const struct rn_vk_init_options_t *options = &ctx->config;
-  uint32_t count = 0;
-  const char *const *required = NULL;
+  uint32_t                           count = 0;
+  const char *const                 *required = NULL;
 
   if (options->instance_extensions)
     required = options->instance_extensions(options->user, &count);
@@ -474,9 +474,9 @@ static rn_result_t _create_instance(struct rn_vk_context *ctx) {
 }
 
 static bool _has_device_extensions(struct rn_vk_context *ctx,
-                                   VkPhysicalDevice gpu,
-                                   const char *const *required,
-                                   uint32_t required_count) {
+                                   VkPhysicalDevice      gpu,
+                                   const char *const    *required,
+                                   uint32_t              required_count) {
 
   if (!required_count)
     return true;
@@ -708,7 +708,7 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
   }
 #endif
 
-  const float priority = 1.0f;
+  const float              priority = 1.0f;
   VkDeviceQueueCreateInfo *queues = ctx->alloc->alloc(
       ctx->queue_family_count * sizeof(*queues), ctx->alloc->ctx);
 
@@ -747,7 +747,7 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
 }
 
 static rn_result_t _create_render_pass(struct rn_vk_context *ctx,
-                                       VkFormat format) {
+                                       VkFormat              format) {
   /* simply creates a render pass with the specified format.
    * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR is used for managed mode. */
   const VkImageLayout final_layout = ctx->mode == RN_VK_TARGET_MANAGED
@@ -858,8 +858,8 @@ static void _destroy_swapchain(struct rn_vk_context *ctx) {
 }
 
 static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
-                                     uint32_t requested_width,
-                                     uint32_t requested_height) {
+                                     uint32_t              requested_width,
+                                     uint32_t              requested_height) {
   struct rn_vk_managed_surface_t *surface = ctx->current_surface;
 
   if (!requested_width || !requested_height)
@@ -912,7 +912,7 @@ static rn_result_t _create_swapchain(struct rn_vk_context *ctx,
   }
 
   VkSurfaceCapabilitiesKHR capabilities;
-  VkResult status = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+  VkResult                 status = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
       ctx->physical_device, surface->vk_surface, &capabilities);
 
   if (status != VK_SUCCESS)
@@ -1188,7 +1188,7 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
 
   for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
     struct rn_vk_frame *frame = &ctx->frames[i];
-    rn_result_t result = _result(
+    rn_result_t         result = _result(
         ctx, vkCreateCommandPool(ctx->device, &pool_info, NULL, &frame->pool),
         "vkCreateCommandPool(frame)");
 
@@ -1233,7 +1233,7 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
 
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height) {
-  struct rn_vk_context *ctx = backend_ctx;
+  struct rn_vk_context           *ctx = backend_ctx;
   struct rn_vk_managed_surface_t *surface = ctx ? ctx->current_surface : NULL;
 
   if (!ctx || ctx->frame_active || ctx->fatal ||
@@ -1493,7 +1493,7 @@ static rn_result_t _clear_color_buffer(void *backend_ctx) {
 }
 
 static rn_result_t _end_frame(void *backend_ctx) {
-  struct rn_vk_context *ctx = backend_ctx;
+  struct rn_vk_context           *ctx = backend_ctx;
   struct rn_vk_managed_surface_t *surface = ctx ? ctx->current_surface : NULL;
 
   if (!ctx || !ctx->frame_active)
@@ -1612,9 +1612,9 @@ static rn_result_t _end_frame(void *backend_ctx) {
   return _result(ctx, status, "vkQueuePresentKHR");
 }
 
-static rn_result_t _create_buffer(void *backend_ctx,
+static rn_result_t _create_buffer(void                          *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
-                                  rn_buffer_handle_t *out) {
+                                  rn_buffer_handle_t            *out) {
   struct rn_vk_context *ctx = backend_ctx;
 
   if (!ctx || !desc || !out || !desc->size || desc->size > SIZE_MAX - 1 ||
@@ -1669,7 +1669,7 @@ static rn_result_t _create_buffer(void *backend_ctx,
                                 .target = desc->target};
 
   VmaAllocationInfo allocation_info;
-  VkResult status =
+  VkResult          status =
       vmaCreateBuffer(ctx->vma, &buffer_info, &alloc_info, &buffer.buffer,
                       &buffer.allocation, &allocation_info);
 
@@ -1766,9 +1766,9 @@ static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
   return RN_OK;
 }
 
-static rn_result_t _set_vertex_buffer(void *backend_ctx,
+static rn_result_t _set_vertex_buffer(void              *backend_ctx,
                                       rn_buffer_handle_t handle,
-                                      uint32_t binding) {
+                                      uint32_t           binding) {
   struct rn_vk_context *ctx = backend_ctx;
 
   if (!ctx || !ctx->frame_active || binding >= RN_VK_MAX_BINDINGS)
@@ -1785,7 +1785,7 @@ static rn_result_t _set_vertex_buffer(void *backend_ctx,
   return RN_OK;
 }
 
-static rn_result_t _set_index_buffer(void *backend_ctx,
+static rn_result_t _set_index_buffer(void              *backend_ctx,
                                      rn_buffer_handle_t handle) {
   struct rn_vk_context *ctx = backend_ctx;
 
@@ -1818,7 +1818,7 @@ static rn_result_t _shader_module(struct rn_vk_context *ctx,
 
 static rn_result_t _create_pipeline(void *backend_ctx,
                                     const struct rn_pipeline_desc_t *desc,
-                                    rn_pipeline_handle_t *out) {
+                                    rn_pipeline_handle_t            *out) {
   struct rn_vk_context *ctx = backend_ctx;
 
   if (!ctx || !desc || !out || !ctx->render_pass || desc->depth_test ||
@@ -1940,7 +1940,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   VkShaderModule fragment_module = VK_NULL_HANDLE;
 
   uint32_t *vertex_spv = (uint32_t *)rn_vk_vertex_spv;
-  size_t vertex_spv_size = rn_vk_vertex_spv_size;
+  size_t    vertex_spv_size = rn_vk_vertex_spv_size;
 
   result = _shader_module(ctx, vertex_spv, vertex_spv_size, &vertex_module);
 
@@ -1950,9 +1950,9 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   uint32_t *frag_spv = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
                            ? (uint32_t *)rn_vk_atlas_spv
                            : (uint32_t *)rn_vk_dedicated_spv;
-  size_t frag_spv_size = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
-                             ? rn_vk_atlas_spv_size
-                             : rn_vk_dedicated_spv_size;
+  size_t    frag_spv_size = desc->shader == RN_PIPELINE_UI_QUAD_ATLAS
+                                ? rn_vk_atlas_spv_size
+                                : rn_vk_dedicated_spv_size;
 
   if (ctx->frag_atlas && desc->shader == RN_PIPELINE_UI_QUAD_ATLAS) {
     result = _compile_shader(ctx->frag_atlas, VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2153,7 +2153,7 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
   _VK_TRACE(ctx->log, "destroyed pipeline %u", (unsigned)handle);
 }
 
-static rn_result_t _set_pipeline(void *backend_ctx,
+static rn_result_t _set_pipeline(void                *backend_ctx,
                                  rn_pipeline_handle_t handle) {
   struct rn_vk_context *ctx = backend_ctx;
 
@@ -2169,7 +2169,7 @@ static rn_result_t _set_pipeline(void *backend_ctx,
   return RN_OK;
 }
 
-static rn_result_t _set_uniform_2f(void *backend_ctx,
+static rn_result_t _set_uniform_2f(void                *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float x, float y) {
   struct rn_vk_context *ctx = backend_ctx;
@@ -2196,7 +2196,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
 
   if (!ctx || !ctx->frame_active || slot >= RN_VK_MAX_TEXTURES)
     return RN_ERROR_BAD_STATE;
-  struct rn_vk_texture *texture = _texture(ctx, handle);
+  struct rn_vk_texture  *texture = _texture(ctx, handle);
   struct rn_vk_pipeline *pipeline = _pipeline(ctx, ctx->pipeline);
 
   if (!texture || !pipeline ||
@@ -2211,11 +2211,12 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
   return RN_OK;
 }
 
-static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
+static rn_result_t _descriptor_for_draw(struct rn_vk_context  *ctx,
                                         struct rn_vk_pipeline *pipeline,
-                                        VkDescriptorSet *out) {
-  struct rn_vk_descriptor_cache *cache = &pipeline->descriptors[ctx->frame_index];
-  const uint32_t count = pipeline->descriptor_count;
+                                        VkDescriptorSet       *out) {
+  struct rn_vk_descriptor_cache *cache =
+      &pipeline->descriptors[ctx->frame_index];
+  const uint32_t      count = pipeline->descriptor_count;
   rn_texture_handle_t textures[RN_VK_MAX_TEXTURES];
   rn_texture_handle_t fallback = ctx->bound_textures[0];
 
@@ -2229,8 +2230,8 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
 
   /* entries before unused belong to this frame. keep their sets unchanged
    * because earlier draws may still reference them */
-  for (struct rn_vk_descriptor_entry *entry = cache->entries; entry != cache->unused;
-       entry = entry->next) {
+  for (struct rn_vk_descriptor_entry *entry = cache->entries;
+       entry != cache->unused; entry = entry->next) {
 
     if (entry->count == count &&
         !memcmp(textures, entry->textures, count * sizeof(*textures))) {
@@ -2400,7 +2401,7 @@ rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
     goto cleanup;
   }
 
-  size_t size = shaderc_result_get_length(result);
+  size_t    size = shaderc_result_get_length(result);
   uint32_t *data = malloc(size);
 
   if (!data) {
@@ -2426,21 +2427,21 @@ cleanup:
 }
 
 static rn_result_t
-_draw_indexed_instanced(void *backend_ctx,
+_draw_indexed_instanced(void                                     *backend_ctx,
                         const struct rn_draw_indexed_instanced_t *draw) {
   struct rn_vk_context *ctx = backend_ctx;
 
   if (!ctx || !ctx->frame_active || !draw)
     return RN_ERROR_BAD_STATE;
   struct rn_vk_pipeline *pipeline = _pipeline(ctx, ctx->pipeline);
-  struct rn_vk_buffer *index = _buffer(ctx, ctx->index_buffer);
+  struct rn_vk_buffer   *index = _buffer(ctx, ctx->index_buffer);
 
   if (!pipeline || !index || draw->index_offset > index->size / 4u ||
       draw->index_count > index->size / 4u - draw->index_offset)
     return RN_ERROR_BAD_STATE;
 
   VkDescriptorSet set = VK_NULL_HANDLE;
-  rn_result_t result = _descriptor_for_draw(ctx, pipeline, &set);
+  rn_result_t     result = _descriptor_for_draw(ctx, pipeline, &set);
 
   if (result != RN_OK)
     return result;
@@ -2760,7 +2761,7 @@ fail:
   return result;
 }
 
-static rn_result_t _create_texture(void *backend_ctx,
+static rn_result_t _create_texture(void                           *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *pixels, size_t size,
                                    rn_texture_handle_t *out) {
@@ -2772,9 +2773,9 @@ static rn_result_t _create_texture(void *backend_ctx,
 }
 
 static rn_result_t
-_create_texture_array(void *backend_ctx,
+_create_texture_array(void                                 *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
-                      rn_texture_handle_t *out) {
+                      rn_texture_handle_t                  *out) {
 
   if (!desc || desc->format != RN_TEXTURE_RGBA8)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -2783,7 +2784,7 @@ _create_texture_array(void *backend_ctx,
 }
 
 static rn_result_t
-_write_texture_array_layer(void *backend_ctx,
+_write_texture_array_layer(void                                  *backend_ctx,
                            const struct rn_texture_array_write_t *write,
                            const void *pixels, size_t size) {
   struct rn_vk_context *ctx = backend_ctx;
@@ -2852,12 +2853,12 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
   _VK_TRACE(ctx->log, "destroyed texture %u", (unsigned)handle);
 }
 
-bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
+bool rn_vk_backend_implement(struct rn_backend_impl_t    *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t *log,
-                             const void *backend_info,
-                             const char *frag_dedicated,
-                             const char *frag_atlas) {
+                             const struct rn_log_t       *log,
+                             const void                  *backend_info,
+                             const char                  *frag_dedicated,
+                             const char                  *frag_atlas) {
   const struct rn_vk_init_options_t *options = backend_info;
 
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free ||
@@ -2998,7 +2999,7 @@ failed:
   return false;
 }
 
-void rn_vk_backend_fini(struct rn_backend_impl_t *backend,
+void rn_vk_backend_fini(struct rn_backend_impl_t    *backend,
                         const struct rn_allocator_t *alloc) {
 
   if (!backend || !alloc || backend->create_buffer != _create_buffer)
@@ -3081,9 +3082,9 @@ static struct rn_vk_context *_state_context(struct rn_state_t *state) {
 }
 
 rn_result_t
-rn_vk_surface_create(struct rn_state_t *state,
+rn_vk_surface_create(struct rn_state_t                 *state,
                      const struct rn_vk_surface_impl_t *impl,
-                     struct rn_vk_managed_surface_t **out_managed_surface) {
+                     struct rn_vk_managed_surface_t   **out_managed_surface) {
   struct rn_vk_context *ctx = _state_context(state);
 
   if (!ctx || ctx->mode != RN_VK_TARGET_MANAGED || ctx->frame_active || !impl ||
@@ -3158,12 +3159,12 @@ rn_vk_surface_create(struct rn_state_t *state,
   return RN_OK;
 }
 
-void rn_vk_surface_set_current(struct rn_state_t *state,
+void rn_vk_surface_set_current(struct rn_state_t              *state,
                                struct rn_vk_managed_surface_t *surface) {
   ((struct rn_vk_context *)state->backend.ctx)->current_surface = surface;
 }
 
-rn_result_t rn_vk_surface_destroy(struct rn_state_t *state,
+rn_result_t rn_vk_surface_destroy(struct rn_state_t              *state,
                                   struct rn_vk_managed_surface_t *surface) {
   struct rn_vk_context *ctx = _state_context(state);
 
@@ -3195,7 +3196,7 @@ rn_result_t rn_vk_surface_destroy(struct rn_state_t *state,
 }
 
 rn_result_t
-rn_vk_get_native_handles(struct rn_state_t *state,
+rn_vk_get_native_handles(struct rn_state_t             *state,
                          struct rn_vk_native_handles_t *out_handles) {
   struct rn_vk_context *ctx = _state_context(state);
 
@@ -3214,9 +3215,9 @@ rn_vk_get_native_handles(struct rn_state_t *state,
 }
 
 rn_result_t
-rn_vk_target_register(struct rn_state_t *state,
+rn_vk_target_register(struct rn_state_t                         *state,
                       const struct rn_vk_external_target_desc_t *desc,
-                      rn_vk_target_handle_t *out_target) {
+                      rn_vk_target_handle_t                     *out_target) {
   struct rn_vk_context *ctx = _state_context(state);
 
   if (!ctx || ctx->mode != RN_VK_TARGET_EXTERNAL || ctx->frame_active ||
@@ -3287,7 +3288,7 @@ rn_vk_target_register(struct rn_state_t *state,
   return RN_OK;
 }
 
-rn_result_t rn_vk_target_set(struct rn_state_t *state,
+rn_result_t rn_vk_target_set(struct rn_state_t    *state,
                              rn_vk_target_handle_t handle) {
   struct rn_vk_context *ctx = _state_context(state);
 
@@ -3321,7 +3322,7 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
   return result == RN_OK ? _dmabuf_release_pending(ctx) : result;
 }
 
-rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
+rn_result_t rn_vk_target_unregister(struct rn_state_t    *state,
                                     rn_vk_target_handle_t handle) {
   struct rn_vk_context *ctx = _state_context(state);
 
@@ -3514,6 +3515,7 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
     };
     VkFormatProperties2 props = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
                                  .pNext = &list};
+
     ctx->format_properties(ctx->physical_device, _dmabuf_rgb[f].vk, &props);
 
     if (!list.drmFormatModifierCount)
@@ -3550,6 +3552,8 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
       }
 
       ctx->dmabuf_formats = formats;
+
+      /* insert format */
       formats[ctx->dmabuf_format_count++] = (struct rn_vk_dmabuf_format_t){
           .format = _dmabuf_rgb[f].drm,
           .modifier = mods[i].drmFormatModifier,

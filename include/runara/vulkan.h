@@ -181,14 +181,13 @@ struct rn_vk_dmabuf_desc_t {
   bool premultiplied;
 };
 
-/* Return a borrowed format table, valid until rn_state_fini
- * an empty table means that dma-buf import is unavailable
- * only explicit modifiers and supported rgb formats are advertised */
+/* Return a borrowed DMABUF format table, valid until rn_state_fini.
+ * an empty table means that DMABUF import is unavailable */ 
 rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
                                  const struct rn_vk_dmabuf_format_t **formats,
                                  size_t                              *count);
 
-/* Import or refresh a dma-buf image before rn_begin, borrowing all input fds.
+/* Import a DMABUF image before rn_begin, borrowing all input fds.
  * Initialize image to zero for a new import, or pass an existing imported image
  * to acquire it for another frame without reallocating its gpu storage. */
 rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
