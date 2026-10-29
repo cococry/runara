@@ -229,6 +229,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
       (unsigned)RN_RENDERER_MAX_TEXTURE_SLOTS);
 
   memset(renderer, 0, sizeof(*renderer));
+  renderer->canvas = backend->initial_canvas;
   renderer->vertex_buffer = RN_INVALID_HANDLE;
   renderer->index_buffer = RN_INVALID_HANDLE;
   renderer->instance_buffer = RN_INVALID_HANDLE;

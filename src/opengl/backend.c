@@ -1290,8 +1290,18 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   ctx->alloc = alloc;
   ctx->log = log;
 
+  GLint viewport[4] = {0};
+
+  glGetIntegerv(GL_VIEWPORT, viewport);
+
   *impl = _rn_gl_dispatch;
   impl->ctx = ctx;
+  impl->initial_canvas = (struct rn_box_u32_t){
+      .x = viewport[0] > 0 ? (uint32_t)viewport[0] : 0,
+      .y = viewport[1] > 0 ? (uint32_t)viewport[1] : 0,
+      .width = (uint32_t)viewport[2],
+      .height = (uint32_t)viewport[3],
+  };
 
   _RN_GL_LOG_TRACE(log, "OpenGL backend initialized (VAO=%u)",
                    (unsigned int)ctx->vertex_array);

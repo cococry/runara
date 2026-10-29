@@ -22,7 +22,6 @@ vec4 convert_yuv(vec4 color, uint info) {
                                   : vec2(0.299, 0.114);
   float kr = coefficients.x, kb = coefficients.y;
   uint depth = info >> 4u;
-  // Y412 stores twelve meaningful bits in the high bits of sixteen-bit words.
   if (depth == 12u) color *= 65535.0 / (4095.0 * 16.0);
   float maximum = exp2(float(depth)) - 1.0;
   float scale = exp2(float(depth - 8u));
@@ -40,8 +39,8 @@ vec4 convert_yuv(vec4 color, uint info) {
 }
 
 vec4 sample_texture(int slot, vec2 uv) {
-  // Constant sampler indices keep the shader Vulkan 1.0 compatible without
-  // shaderSampledImageArrayDynamicIndexing.
+  /* constant sampler indices keep the shader Vulkan 1.0 compatible without
+   shaderSampledImageArrayDynamicIndexing */
 
   switch (slot) {
     case 0: return texture(u_textures[0], uv);

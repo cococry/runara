@@ -142,6 +142,7 @@ struct rn_backend_impl_t {
   /* Zero uses the renderer default. */
   uint32_t texture_slots;
   void *ctx;
+  struct rn_box_u32_t initial_canvas;
 
   /* Frame lifecycle */
   rn_result_t (*begin_frame)(void *ctx, uint32_t x, uint32_t y, uint32_t width,
