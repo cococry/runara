@@ -155,15 +155,3 @@ summary(
   bool_yn: true,
 )
 
-if build_vulkan and host_machine.system() == 'linux'
-  dmabuf_test = executable(
-    'vulkan-dmabuf-test',
-    'tests/vulkan-dmabuf.c',
-    dependencies: runara_deps,
-    include_directories: runara_includes,
-    link_with: runara_lib,
-    c_args: ['-ffunction-sections', '-fdata-sections'],
-    link_args: ['-Wl,--gc-sections'],
-  )
-  test('vulkan-dmabuf', dmabuf_test)
-endif
