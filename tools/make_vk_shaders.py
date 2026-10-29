@@ -13,9 +13,11 @@ def main():
     names = ('vertex', 'atlas', 'dedicated')
     generated = ['#include "src/vulkan/shaders.h"\n']
     with tempfile.TemporaryDirectory() as directory:
-        for name, source in zip(names, sources):
+        variants = [(name, source, 16) for name, source in zip(names, sources)]
+        variants += [('dedicated4', sources[2], 4), ('dedicated8', sources[2], 8)]
+        for name, source, slots in variants:
             compiled = pathlib.Path(directory) / (name + '.spv')
-            subprocess.run([compiler, '-V', '--target-env', 'vulkan1.0', '-o', str(compiled), source], check=True)
+            subprocess.run([compiler, '-V', f'-DRN_TEXTURE_SLOTS={slots}', '--target-env', 'vulkan1.0', '-o', str(compiled), source], check=True)
             data = compiled.read_bytes()
             if len(data) % 4:
                 raise ValueError(f"{source} compiled to non-word-aligned SPIR-V")

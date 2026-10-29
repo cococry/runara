@@ -65,7 +65,13 @@ struct rn_vk_init_options_t {
    */
   VkFormat external_format;
 
-  /* enable optional linux dma-buf import support when the device supports it */
+  /* Enable optional Linux DMA-BUF imports. The driver determines available
+   * format/modifier pairs. YUV descriptor costs may reduce batch capacity.
+   * Custom Vulkan fragment shaders should size their texture arrays with the
+   * provided RN_TEXTURE_SLOTS macro (4, 8 or 16) and use constant indices.
+   * Packed YUV uses the built-in fragment shader's conversion logic; custom
+   * shaders sampling those formats must implement the same conversion.
+   */
   bool enable_dmabuf_import;
 };
 
@@ -178,6 +184,20 @@ struct rn_vk_dmabuf_plane_t {
   uint32_t offset, stride;
 };
 
+/* Zero-initialized YUV metadata selects BT.601, narrow range and a
+ * driver-supported chroma location. RGB imports ignore these fields. */
+enum rn_vk_ycbcr_model_t {
+  RN_VK_YCBCR_BT601,
+  RN_VK_YCBCR_BT709,
+  RN_VK_YCBCR_BT2020
+};
+enum rn_vk_ycbcr_range_t { RN_VK_YCBCR_NARROW, RN_VK_YCBCR_FULL };
+enum rn_vk_chroma_location_t {
+  RN_VK_CHROMA_AUTO,
+  RN_VK_CHROMA_COSITED,
+  RN_VK_CHROMA_MIDPOINT
+};
+
 struct rn_vk_dmabuf_desc_t {
   uint32_t                    width, height, format;
   uint64_t                    modifier;
@@ -186,10 +206,16 @@ struct rn_vk_dmabuf_desc_t {
   /* borrowed sync-file fd, or -1 to wait on implicit dma-buf fences */
   int  acquire_fence_fd;
   bool premultiplied;
+  enum rn_vk_ycbcr_model_t ycbcr_model;
+  enum rn_vk_ycbcr_range_t ycbcr_range;
+  enum rn_vk_chroma_location_t chroma_x, chroma_y;
 };
 
 /* Return a borrowed DMABUF format table, valid until rn_state_fini.
- * an empty table means that DMABUF import is unavailable */ 
+ * An empty table means that DMA-BUF import is unavailable. This is the
+ * Vulkan driver's supported subset, which may differ from EGL's format table.
+ * Modifiers (including vendor tiling/compression) are enumerated by the driver.
+ */
 rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
                                  const struct rn_vk_dmabuf_format_t **formats,
                                  size_t                              *count);

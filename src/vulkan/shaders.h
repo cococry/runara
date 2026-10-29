@@ -31,3 +31,8 @@ extern const uint32_t rn_vk_atlas_spv[];
 extern const size_t   rn_vk_atlas_spv_size;
 extern const uint32_t rn_vk_dedicated_spv[];
 extern const size_t   rn_vk_dedicated_spv_size;
+
+extern const uint32_t rn_vk_dedicated4_spv[];
+extern const size_t rn_vk_dedicated4_spv_size;
+extern const uint32_t rn_vk_dedicated8_spv[];
+extern const size_t rn_vk_dedicated8_spv_size;

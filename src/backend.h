@@ -139,6 +139,8 @@ struct rn_draw_indexed_instanced_t {
 };
 
 struct rn_backend_impl_t {
+  /* Zero uses the renderer default. */
+  uint32_t texture_slots;
   void *ctx;
 
   /* Frame lifecycle */

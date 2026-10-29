@@ -126,7 +126,10 @@ static rn_result_t _submit_instance(struct rn_state_t               *state,
 
         /* insert the texture into the last batch if we have space */
 
-        if (!batch && last->texture_count < RN_RENDERER_MAX_TEXTURE_SLOTS) {
+        if (!batch &&
+            last->texture_count < (state->backend.texture_slots
+                                       ? state->backend.texture_slots
+                                       : RN_RENDERER_MAX_TEXTURE_SLOTS)) {
           texture_slot = last->texture_count;
           last->textures[last->texture_count++] = texture;
           batch = last;

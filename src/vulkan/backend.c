@@ -67,18 +67,30 @@ struct rn_vk_buffer {
   bool                    alive;
 };
 
+struct rn_vk_conversion {
+  VkSamplerYcbcrConversion conversion;
+  VkSampler sampler;
+  VkSamplerYcbcrConversionCreateInfo info;
+  uint32_t descriptors;
+  VkFormatFeatureFlags features;
+  struct rn_vk_conversion *next;
+};
+
 struct rn_vk_texture {
   VkImage                    image;
   VkImageView                view;
   VkSampler                  sampler;
+  struct rn_vk_conversion *conversion;
+  uint32_t packed_yuv;
   VmaAllocation              allocation;
   uint32_t                   width, height, layers;
   bool                       array;
   bool                       borrowed;
   bool                       alive;
   bool                       dmabuf, acquired;
-  VkDeviceMemory             dmabuf_memory;
-  int                        dmabuf_fd;
+  VkDeviceMemory dmabuf_memory[RN_VK_DMABUF_MAX_PLANES];
+  int dmabuf_fd[RN_VK_DMABUF_MAX_PLANES];
+  uint32_t dmabuf_memory_count;
   int                        acquire_fd;
   uint64_t                   dmabuf_device, dmabuf_inode;
   struct rn_vk_dmabuf_desc_t dmabuf_desc;
@@ -112,6 +124,12 @@ struct rn_vk_pipeline {
   uint32_t                      descriptor_count;
   uint32_t                      strides[RN_VK_MAX_BINDINGS];
   bool                          alive;
+  rn_pipeline_handle_t parent;
+  VkSampler immutable[RN_VK_MAX_TEXTURES];
+  uint32_t pool_descriptors;
+  struct rn_pipeline_desc_t source;
+  struct rn_vertex_buffer_layout_t source_bindings[RN_VK_MAX_BINDINGS];
+  struct rn_vertex_attribute_t source_attributes[32];
 };
 
 struct rn_vk_external_target {
@@ -195,6 +213,13 @@ struct rn_vk_context {
   void                                       *staging_map;
   size_t                                      staging_capacity;
   bool                                        dmabuf_enabled;
+  bool ycbcr_enabled;
+  bool ycbcr_444_enabled;
+  uint32_t texture_slots;
+  struct rn_vk_conversion *conversions;
+  VkSampler immutable_rgb;
+  PFN_vkCreateSamplerYcbcrConversionKHR create_conversion;
+  PFN_vkDestroySamplerYcbcrConversionKHR destroy_conversion;
   struct rn_vk_dmabuf_format_t               *dmabuf_formats;
   size_t                                      dmabuf_format_count;
   rn_texture_handle_t                        *acquired_images;
@@ -213,6 +238,7 @@ struct rn_vk_context {
   size_t                 pipeline_count;
 
   rn_pipeline_handle_t pipeline;
+  VkPipeline bound_pipeline;
   rn_buffer_handle_t   vertex_buffers[RN_VK_MAX_BINDINGS];
   rn_buffer_handle_t   index_buffer;
   rn_texture_handle_t  bound_textures[RN_VK_MAX_TEXTURES];
@@ -327,8 +353,9 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context  *ctx,
                                         struct rn_vk_pipeline *pipeline,
                                         VkDescriptorSet       *out);
 
-rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
-                            uint32_t **spv, size_t *spv_size);
+rn_result_t _compile_shader(struct rn_vk_context *ctx, const char *glsl,
+                            VkShaderStageFlagBits stage, uint32_t **spv,
+                            size_t *spv_size);
 
 static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .begin_frame = _begin_frame,
@@ -738,8 +765,41 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
     };
   }
 
+  VkPhysicalDeviceYcbcr2Plane444FormatsFeaturesEXT ycbcr444 = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_YCBCR_2_PLANE_444_FORMATS_FEATURES_EXT};
+  const char *extension444 = VK_EXT_YCBCR_2PLANE_444_FORMATS_EXTENSION_NAME;
+  bool has444 =
+      ctx->dmabuf_enabled &&
+      _has_device_extensions(ctx, ctx->physical_device, &extension444, 1);
+  bool added444 = false;
+  for (uint32_t i = 0; i < extension_count; ++i)
+    added444 |= !strcmp(extensions[i], extension444);
+  if (has444 && !added444) {
+    if (extension_count == sizeof(extensions) / sizeof(extensions[0]))
+      return RN_ERROR_INVALID_ARGUMENT;
+    extensions[extension_count++] = extension444;
+  }
+  VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcr = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES,
+      .pNext = has444 ? &ycbcr444 : NULL,
+  };
+  if (ctx->dmabuf_enabled) {
+    PFN_vkGetPhysicalDeviceFeatures2KHR get_features =
+        (PFN_vkGetPhysicalDeviceFeatures2KHR)vkGetInstanceProcAddr(
+            ctx->instance, "vkGetPhysicalDeviceFeatures2KHR");
+    VkPhysicalDeviceFeatures2 features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &ycbcr};
+    if (get_features)
+      get_features(ctx->physical_device, &features);
+    ctx->ycbcr_enabled = ycbcr.samplerYcbcrConversion;
+    ctx->ycbcr_444_enabled = ycbcr444.ycbcr2plane444Formats;
+  }
+
   const VkDeviceCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .pNext = ctx->dmabuf_enabled ? &ycbcr : NULL,
       .queueCreateInfoCount = ctx->queue_family_count,
       .pQueueCreateInfos = queues,
       .enabledExtensionCount = extension_count,
@@ -1495,8 +1555,6 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
   for (uint32_t i = 0; i < RN_VK_MAX_BINDINGS; ++i)
     ctx->vertex_buffers[i] = RN_INVALID_HANDLE;
 
-  for (uint32_t i = 0; i < RN_VK_MAX_TEXTURES; ++i)
-    ctx->bound_textures[i] = RN_INVALID_HANDLE;
 
   VkRect2D scissor = {{(int32_t)x, (int32_t)y}, {width, height}};
 
@@ -1888,9 +1946,11 @@ static rn_result_t _shader_module(struct rn_vk_context *ctx,
                  "vkCreateShaderModule");
 }
 
-static rn_result_t _create_pipeline(void *backend_ctx,
-                                    const struct rn_pipeline_desc_t *desc,
-                                    rn_pipeline_handle_t            *out) {
+static rn_result_t
+_create_pipeline_samplers(void *backend_ctx,
+                          const struct rn_pipeline_desc_t *desc,
+                          const VkSampler *samplers, uint32_t pool_descriptors,
+                          rn_pipeline_handle_t *out) {
   struct rn_vk_context *ctx = backend_ctx;
 
   if (!ctx || !desc || !out || !ctx->render_pass || desc->depth_test ||
@@ -1962,12 +2022,13 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
   /* Atlas uses one combined sampler. Dedicated batches use 16 slots. */
   pipeline.descriptor_count =
-      desc->shader == RN_PIPELINE_UI_QUAD_ATLAS ? 1u : RN_VK_MAX_TEXTURES;
+      desc->shader == RN_PIPELINE_UI_QUAD_ATLAS ? 1u : ctx->texture_slots;
 
   const VkDescriptorSetLayoutBinding sampler_binding = {
       .binding = 0,
       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
       .descriptorCount = pipeline.descriptor_count,
+      .pImmutableSamplers = samplers,
       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
   };
 
@@ -1986,18 +2047,24 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   if (result != RN_OK)
     return result;
 
-  const VkPushConstantRange push_range = {
-      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-      .offset = 0,
-      .size = 8,
-  };
+  const VkPushConstantRange push_ranges[2] = {
+      {
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+          .offset = 0,
+          .size = 8,
+      },
+      {
+          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .offset = 8,
+          .size = ctx->texture_slots * sizeof(uint32_t),
+      }};
 
   const VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
       .setLayoutCount = 1,
       .pSetLayouts = &pipeline.set_layout,
-      .pushConstantRangeCount = 1,
-      .pPushConstantRanges = &push_range,
+      .pushConstantRangeCount = 2,
+      .pPushConstantRanges = push_ranges,
   };
 
   result = _result(ctx,
@@ -2026,8 +2093,18 @@ static rn_result_t _create_pipeline(void *backend_ctx,
                                 ? rn_vk_atlas_spv_size
                                 : rn_vk_dedicated_spv_size;
 
+  if (desc->shader == RN_PIPELINE_UI_QUAD_DEDICATED) {
+    if (ctx->texture_slots == 4) {
+      frag_spv = (uint32_t *)rn_vk_dedicated4_spv;
+      frag_spv_size = rn_vk_dedicated4_spv_size;
+    } else if (ctx->texture_slots == 8) {
+      frag_spv = (uint32_t *)rn_vk_dedicated8_spv;
+      frag_spv_size = rn_vk_dedicated8_spv_size;
+    }
+  }
+
   if (ctx->frag_atlas && desc->shader == RN_PIPELINE_UI_QUAD_ATLAS) {
-    result = _compile_shader(ctx->frag_atlas, VK_SHADER_STAGE_FRAGMENT_BIT,
+    result = _compile_shader(ctx, ctx->frag_atlas, VK_SHADER_STAGE_FRAGMENT_BIT,
                              &frag_spv, &frag_spv_size);
 
     if (result != RN_OK) {
@@ -2036,8 +2113,9 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 
   } else if (ctx->frag_dedicated &&
              desc->shader == RN_PIPELINE_UI_QUAD_DEDICATED) {
-    result = _compile_shader(ctx->frag_dedicated, VK_SHADER_STAGE_FRAGMENT_BIT,
-                             &frag_spv, &frag_spv_size);
+    result =
+        _compile_shader(ctx, ctx->frag_dedicated, VK_SHADER_STAGE_FRAGMENT_BIT,
+                        &frag_spv, &frag_spv_size);
 
     if (result != RN_OK) {
       goto fail;
@@ -2156,6 +2234,24 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   if (result != RN_OK)
     goto fail;
 
+  pipeline.source = *desc;
+  pipeline.source.uniform_binding_count = 0;
+  pipeline.source.uniform_bindings = NULL;
+  size_t saved_attributes = 0;
+  for (size_t i = 0; i < desc->vertex_binding_count; ++i) {
+    pipeline.source_bindings[i] = desc->vertex_bindings[i];
+    size_t n = desc->vertex_bindings[i].attribute_count;
+    if (n)
+      memcpy(pipeline.source_attributes + saved_attributes,
+             desc->vertex_bindings[i].attributes,
+             n * sizeof(*pipeline.source_attributes));
+    saved_attributes += n;
+  }
+  pipeline.pool_descriptors =
+      pool_descriptors ? pool_descriptors : pipeline.descriptor_count;
+  if (samplers)
+    memcpy(pipeline.immutable, samplers,
+           pipeline.descriptor_count * sizeof(*samplers));
   pipeline.alive = true;
   *out = (rn_pipeline_handle_t)ctx->pipeline_count;
   ctx->pipelines[ctx->pipeline_count++] = pipeline;
@@ -2177,6 +2273,72 @@ fail:
   return result;
 }
 
+static rn_result_t _create_pipeline(void *ctx,
+                                    const struct rn_pipeline_desc_t *desc,
+                                    rn_pipeline_handle_t *out) {
+  return _create_pipeline_samplers(ctx, desc, NULL, 0, out);
+}
+
+/* YCbCr samplers must be immutable. we cache layouts/pipelines by the sampler
+ * tuple, so RGB and YUV images can stay in the same zero-copy batch. */
+static rn_result_t _sampling_pipeline(struct rn_vk_context *ctx,
+                                      struct rn_vk_pipeline **out) {
+  struct rn_vk_pipeline *base = *out;
+  VkSampler samplers[RN_VK_MAX_TEXTURES] = {0};
+  bool converted = false;
+  uint32_t descriptors = 0, maximum = 1;
+  struct rn_vk_texture *fallback = _texture(ctx, ctx->bound_textures[0]);
+  if (!fallback)
+    return RN_ERROR_BAD_STATE;
+  for (uint32_t i = 0; i < base->descriptor_count; ++i) {
+    struct rn_vk_texture *t = _texture(ctx, ctx->bound_textures[i]);
+    if (!t)
+      t = fallback;
+    samplers[i] = ctx->immutable_rgb;
+    if (t->conversion) {
+      samplers[i] = t->sampler;
+      converted = true;
+      if (t->conversion->descriptors > maximum)
+        maximum = t->conversion->descriptors;
+    }
+  }
+  if (!converted)
+    return RN_OK;
+
+  /* all elements of a binding consume the maximum conversion descriptor size */
+  descriptors = maximum * base->descriptor_count;
+
+  rn_pipeline_handle_t parent = (rn_pipeline_handle_t)(base - ctx->pipelines);
+  for (size_t i = 0; i < ctx->pipeline_count; ++i) {
+    struct rn_vk_pipeline *p = &ctx->pipelines[i];
+    if (p->alive && p->parent == parent + 1 &&
+        !memcmp(p->immutable, samplers, sizeof(samplers))) {
+      *out = p;
+      return RN_OK;
+    }
+  }
+
+  struct rn_pipeline_desc_t desc = base->source;
+  struct rn_vertex_buffer_layout_t bindings[RN_VK_MAX_BINDINGS];
+  struct rn_vertex_attribute_t attributes[32];
+  memcpy(bindings, base->source_bindings, sizeof(bindings));
+  memcpy(attributes, base->source_attributes, sizeof(attributes));
+  size_t offset = 0;
+  for (size_t i = 0; i < desc.vertex_binding_count; ++i) {
+    bindings[i].attributes = attributes + offset;
+    offset += bindings[i].attribute_count;
+  }
+  desc.vertex_bindings = bindings;
+  rn_pipeline_handle_t handle;
+  rn_result_t result =
+      _create_pipeline_samplers(ctx, &desc, samplers, descriptors, &handle);
+  if (result != RN_OK)
+    return result;
+  ctx->pipelines[handle].parent = parent + 1;
+  *out = &ctx->pipelines[handle];
+  return RN_OK;
+}
+
 static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
   struct rn_vk_context *ctx = backend_ctx;
 
@@ -2194,6 +2356,10 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
 
   if (!ctx->tearing_down)
     vkDeviceWaitIdle(ctx->device);
+
+  for (size_t i = 0; i < ctx->pipeline_count; ++i)
+    if (ctx->pipelines[i].alive && ctx->pipelines[i].parent == handle + 1)
+      _destroy_pipeline(ctx, (rn_pipeline_handle_t)i);
 
   for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
     struct rn_vk_descriptor_cache *cache = &pipeline->descriptors[i];
@@ -2238,6 +2404,7 @@ static rn_result_t _set_pipeline(void                *backend_ctx,
   vkCmdBindPipeline(ctx->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline->pipeline);
   ctx->pipeline = handle;
+  ctx->bound_pipeline = pipeline->pipeline;
   return RN_OK;
 }
 
@@ -2341,7 +2508,8 @@ static rn_result_t _descriptor_for_draw(struct rn_vk_context  *ctx,
 
     const VkDescriptorPoolSize pool_size = {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = RN_VK_DESCRIPTOR_PAGE_SIZE * count,
+        .descriptorCount =
+            RN_VK_DESCRIPTOR_PAGE_SIZE * pipeline->pool_descriptors,
     };
 
     const VkDescriptorPoolCreateInfo pool_info = {
@@ -2417,8 +2585,9 @@ update:
   return RN_OK;
 }
 
-rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
-                            uint32_t **spv, size_t *spv_size) {
+rn_result_t _compile_shader(struct rn_vk_context *ctx, const char *glsl,
+                            VkShaderStageFlagBits stage, uint32_t **spv,
+                            size_t *spv_size) {
 
   if (!glsl || !spv || !spv_size)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -2450,6 +2619,13 @@ rn_result_t _compile_shader(const char *glsl, VkShaderStageFlagBits stage,
     shaderc_compiler_release(compiler);
     return RN_ERROR_OUT_OF_MEMORY;
   }
+
+  const char *slots = ctx->texture_slots == 4   ? "4"
+                      : ctx->texture_slots == 8 ? "8"
+                                                : "16";
+  shaderc_compile_options_add_macro_definition(options, "RN_TEXTURE_SLOTS",
+                                               strlen("RN_TEXTURE_SLOTS"),
+                                               slots, strlen(slots));
 
   shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan,
                                          shaderc_env_version_vulkan_1_0);
@@ -2513,10 +2689,30 @@ _draw_indexed_instanced(void                                     *backend_ctx,
     return RN_ERROR_BAD_STATE;
 
   VkDescriptorSet set = VK_NULL_HANDLE;
-  rn_result_t     result = _descriptor_for_draw(ctx, pipeline, &set);
+  rn_result_t result = _sampling_pipeline(ctx, &pipeline);
+  if (result != RN_OK)
+    return result;
+  if (ctx->bound_pipeline != pipeline->pipeline) {
+    vkCmdBindPipeline(ctx->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline->pipeline);
+    ctx->bound_pipeline = pipeline->pipeline;
+  }
+  result = _descriptor_for_draw(ctx, pipeline, &set);
 
   if (result != RN_OK)
     return result;
+
+  if (pipeline->shader == RN_PIPELINE_UI_QUAD_DEDICATED) {
+    uint32_t metadata[RN_VK_MAX_TEXTURES] = {0};
+    struct rn_vk_texture *fallback = _texture(ctx, ctx->bound_textures[0]);
+    for (uint32_t i = 0; i < pipeline->descriptor_count; ++i) {
+      struct rn_vk_texture *t = _texture(ctx, ctx->bound_textures[i]);
+      metadata[i] = (t ? t : fallback)->packed_yuv;
+    }
+    vkCmdPushConstants(ctx->command_buffer, pipeline->layout,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, 8,
+                       pipeline->descriptor_count * sizeof(uint32_t), metadata);
+  }
 
   /* bind descriptor set */
   vkCmdBindDescriptorSets(ctx->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2911,12 +3107,14 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
   if (!ctx->tearing_down)
     vkDeviceWaitIdle(ctx->device);
 
-  vkDestroySampler(ctx->device, texture->sampler, NULL);
+  if (!texture->conversion)
+    vkDestroySampler(ctx->device, texture->sampler, NULL);
   vkDestroyImageView(ctx->device, texture->view, NULL);
 
   if (texture->dmabuf) {
     vkDestroyImage(ctx->device, texture->image, NULL);
-    vkFreeMemory(ctx->device, texture->dmabuf_memory, NULL);
+    for (uint32_t i = 0; i < texture->dmabuf_memory_count; ++i)
+      vkFreeMemory(ctx->device, texture->dmabuf_memory[i], NULL);
     _dmabuf_close(texture);
   } else if (!texture->borrowed) {
     vmaDestroyImage(ctx->vma, texture->image, texture->allocation);
@@ -2946,6 +3144,7 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t    *impl,
 
   memset(ctx, 0, sizeof(*ctx));
 
+  ctx->texture_slots = RN_VK_MAX_TEXTURES;
   ctx->frag_dedicated = frag_dedicated;
   ctx->frag_atlas = frag_atlas;
 
@@ -3026,6 +3225,7 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t    *impl,
 
   *impl = _rn_vk_dispatch;
   impl->ctx = ctx;
+  impl->texture_slots = ctx->texture_slots;
 
   _VK_TRACE(log, "Vulkan 1.0 backend ready (GPU=%s, mode=%s)",
             ctx->properties.deviceName,
@@ -3037,6 +3237,9 @@ failed:
 
   if (ctx->device)
     vkDeviceWaitIdle(ctx->device);
+
+  if (ctx->device)
+    vkDestroySampler(ctx->device, ctx->immutable_rgb, NULL);
 
   if (ctx->device && ctx->upload_fence)
     vkDestroyFence(ctx->device, ctx->upload_fence, NULL);
@@ -3081,7 +3284,6 @@ void rn_vk_backend_fini(struct rn_backend_impl_t    *backend,
   if (!ctx)
     return;
 
-  /* Runara owns submission, so we also wait for GPU completion on teardown. */
   if (ctx->device)
     _result(ctx, vkDeviceWaitIdle(ctx->device), "vkDeviceWaitIdle(shutdown)");
   ctx->tearing_down = true;
@@ -3105,6 +3307,15 @@ void rn_vk_backend_fini(struct rn_backend_impl_t    *backend,
 
     if (ctx->buffers[i].alive)
       _destroy_buffer(ctx, (rn_buffer_handle_t)i);
+
+  vkDestroySampler(ctx->device, ctx->immutable_rgb, NULL);
+  while (ctx->conversions) {
+    struct rn_vk_conversion *c = ctx->conversions;
+    ctx->conversions = c->next;
+    vkDestroySampler(ctx->device, c->sampler, NULL);
+    ctx->destroy_conversion(ctx->device, c->conversion, NULL);
+    alloc->free(c, alloc->ctx);
+  }
 
   if (ctx->upload_fence)
     vkDestroyFence(ctx->device, ctx->upload_fence, NULL);
@@ -3456,6 +3667,8 @@ rn_result_t rn_vk_target_unregister(struct rn_state_t    *state,
 static rn_result_t _wrap_vk_image(struct rn_vk_context *ctx, VkImage image,
                                   VkFormat format, uint32_t width,
                                   uint32_t height, bool opaque,
+                                  const VkComponentMapping *components,
+                                  struct rn_vk_conversion *conversion,
                                   struct rn_image_t *out_image) {
 
   if (!ctx || !out_image || !image || !width || !height || ctx->frame_active)
@@ -3474,8 +3687,13 @@ static rn_result_t _wrap_vk_image(struct rn_vk_context *ctx, VkImage image,
   texture.layers = 1;
   texture.borrowed = true;
 
-  const VkImageViewCreateInfo view_info = {
+  VkSamplerYcbcrConversionInfo conversion_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
+      .conversion = conversion ? conversion->conversion : VK_NULL_HANDLE,
+  };
+  VkImageViewCreateInfo view_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .pNext = conversion ? &conversion_info : NULL,
       .image = image,
       .viewType = VK_IMAGE_VIEW_TYPE_2D,
       .format = format,
@@ -3489,6 +3707,10 @@ static rn_result_t _wrap_vk_image(struct rn_vk_context *ctx, VkImage image,
           },
   };
 
+  if (components)
+    view_info.components = *components;
+  if (opaque)
+    view_info.components.a = VK_COMPONENT_SWIZZLE_ONE;
   VkResult status =
       vkCreateImageView(ctx->device, &view_info, NULL, &texture.view);
 
@@ -3507,7 +3729,12 @@ static rn_result_t _wrap_vk_image(struct rn_vk_context *ctx, VkImage image,
       .maxAnisotropy = 1.0f,
   };
 
-  status = vkCreateSampler(ctx->device, &sampler_info, NULL, &texture.sampler);
+  texture.conversion = conversion;
+  if (conversion)
+    texture.sampler = conversion->sampler;
+  else
+    status =
+        vkCreateSampler(ctx->device, &sampler_info, NULL, &texture.sampler);
 
   if (status != VK_SUCCESS) {
     vkDestroyImageView(ctx->device, texture.view, NULL);
@@ -3534,7 +3761,7 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
                                    uint32_t           height,
                                    struct rn_image_t *out_image) {
   return _wrap_vk_image(_state_context(state), image, format, width, height,
-                        false, out_image);
+                        false, NULL, NULL, out_image);
 }
 
 #ifdef __linux__
@@ -3550,19 +3777,163 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
   ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) |              \
    ((uint32_t)(d) << 24))
 
-static const struct {
+/* DRM fourcc describes pixels; modifiers describe layout and are always
+ * enumerated by the driver, never decoded here. X formats force alpha to one.
+ */
+struct rn_vk_drm_format {
   uint32_t drm;
   VkFormat vk;
-  bool     opaque;
-} _dmabuf_rgb[] = {
-    {RN_FOURCC('A', 'R', '2', '4'), VK_FORMAT_B8G8R8A8_UNORM, false},
-    {RN_FOURCC('X', 'R', '2', '4'), VK_FORMAT_B8G8R8A8_UNORM, true},
-    {RN_FOURCC('A', 'B', '2', '4'), VK_FORMAT_R8G8B8A8_UNORM, false},
-    {RN_FOURCC('X', 'B', '2', '4'), VK_FORMAT_R8G8B8A8_UNORM, true},
+  bool opaque, yuv, swap_rb, two_plane_444, packed;
+  uint8_t subsampled;
+  VkComponentMapping components;
 };
 
+
+#define RGB(a, b, c, d, fmt)                                                   \
+  {.drm = RN_FOURCC(a, b, c, d), .vk = VK_FORMAT_##fmt}
+#define OPAQUE(a, b, c, d, fmt)                                                \
+  {.drm = RN_FOURCC(a, b, c, d), .vk = VK_FORMAT_##fmt, .opaque = true}
+#define YUV_LAYOUT(a, b, c, d, fmt, swap, sub)                                 \
+  {.drm = RN_FOURCC(a, b, c, d),                                               \
+   .vk = VK_FORMAT_##fmt,                                                      \
+   .yuv = true,                                                                \
+   .swap_rb = swap,                                                            \
+   .subsampled = sub}
+#define YUV(a, b, c, d, fmt, swap) YUV_LAYOUT(a, b, c, d, fmt, swap, 0)
+#define YUV420(a, b, c, d, fmt, swap) YUV_LAYOUT(a, b, c, d, fmt, swap, 3)
+#define YUV422(a, b, c, d, fmt, swap) YUV_LAYOUT(a, b, c, d, fmt, swap, 1)
+#define SWIZZLE(a, b, c, d, fmt, r, g, bl, al)                                 \
+  {                                                                            \
+    .drm = RN_FOURCC(a, b, c, d), .vk = VK_FORMAT_##fmt, .components = {       \
+      VK_COMPONENT_SWIZZLE_##r,                                                \
+      VK_COMPONENT_SWIZZLE_##g,                                                \
+      VK_COMPONENT_SWIZZLE_##bl,                                               \
+      VK_COMPONENT_SWIZZLE_##al                                                \
+    }                                                                          \
+  }
+#define YUV444(a, b, c, d, fmt, swap)                                          \
+  {.drm = RN_FOURCC(a, b, c, d),                                               \
+   .vk = VK_FORMAT_##fmt,                                                      \
+   .yuv = true,                                                                \
+   .swap_rb = swap,                                                            \
+   .two_plane_444 = true}
+#define YUV_SWIZZLE(a, b, c, d, fmt, r, g, bl, al)                             \
+  {                                                                            \
+    .drm = RN_FOURCC(a, b, c, d), .vk = VK_FORMAT_##fmt, .yuv = true,          \
+    .packed = true, .components = {                                            \
+      VK_COMPONENT_SWIZZLE_##r,                                                \
+      VK_COMPONENT_SWIZZLE_##g,                                                \
+      VK_COMPONENT_SWIZZLE_##bl,                                               \
+      VK_COMPONENT_SWIZZLE_##al                                                \
+    }                                                                          \
+  }
+
+
+// clang-format off
+static const struct rn_vk_drm_format _dmabuf_formats[] = {
+    RGB('A','R','2','4', B8G8R8A8_UNORM),
+    OPAQUE('X','R','2','4', B8G8R8A8_UNORM),
+    RGB('A','B','2','4', R8G8B8A8_UNORM),
+    OPAQUE('X','B','2','4', R8G8B8A8_UNORM),
+    RGB('R','G','2','4', B8G8R8_UNORM),
+    RGB('B','G','2','4', R8G8B8_UNORM),
+    RGB('R','G','1','6', R5G6B5_UNORM_PACK16),
+    RGB('B','G','1','6', B5G6R5_UNORM_PACK16),
+    RGB('A','R','1','5', A1R5G5B5_UNORM_PACK16),
+    OPAQUE('X','R','1','5', A1R5G5B5_UNORM_PACK16),
+    RGB('R','A','1','5', R5G5B5A1_UNORM_PACK16),
+    OPAQUE('R','X','1','5', R5G5B5A1_UNORM_PACK16),
+    RGB('B','A','1','5', B5G5R5A1_UNORM_PACK16),
+    OPAQUE('B','X','1','5', B5G5R5A1_UNORM_PACK16),
+    RGB('R','A','1','2', R4G4B4A4_UNORM_PACK16),
+    OPAQUE('R','X','1','2', R4G4B4A4_UNORM_PACK16),
+    RGB('B','A','1','2', B4G4R4A4_UNORM_PACK16),
+    OPAQUE('B','X','1','2', B4G4R4A4_UNORM_PACK16),
+    RGB('A','R','3','0', A2R10G10B10_UNORM_PACK32),
+    OPAQUE('X','R','3','0', A2R10G10B10_UNORM_PACK32),
+    RGB('A','B','3','0', A2B10G10R10_UNORM_PACK32),
+    OPAQUE('X','B','3','0', A2B10G10R10_UNORM_PACK32),
+    RGB('A','B','4','8', R16G16B16A16_UNORM),
+    OPAQUE('X','B','4','8', R16G16B16A16_UNORM),
+    RGB('A','B','4','H', R16G16B16A16_SFLOAT),
+    OPAQUE('X','B','4','H', R16G16B16A16_SFLOAT),
+    SWIZZLE('R','A','2','4', R8G8B8A8_UNORM, A,B,G,R),
+    SWIZZLE('R','X','2','4', R8G8B8A8_UNORM, A,B,G,ONE),
+    SWIZZLE('B','A','2','4', R8G8B8A8_UNORM, G,B,A,R),
+    SWIZZLE('B','X','2','4', R8G8B8A8_UNORM, G,B,A,ONE),
+    SWIZZLE('A','B','1','5', A1R5G5B5_UNORM_PACK16, B,G,R,A),
+    SWIZZLE('X','B','1','5', A1R5G5B5_UNORM_PACK16, B,G,R,ONE),
+    SWIZZLE('A','R','1','2', R4G4B4A4_UNORM_PACK16, G,B,A,R),
+    SWIZZLE('X','R','1','2', R4G4B4A4_UNORM_PACK16, G,B,A,ONE),
+    SWIZZLE('A','B','1','2', R4G4B4A4_UNORM_PACK16, A,B,G,R),
+    SWIZZLE('X','B','1','2', R4G4B4A4_UNORM_PACK16, A,B,G,ONE),
+    SWIZZLE('A','R','4','8', R16G16B16A16_UNORM, B,G,R,A),
+    SWIZZLE('X','R','4','8', R16G16B16A16_UNORM, B,G,R,ONE),
+    SWIZZLE('A','R','4','H', R16G16B16A16_SFLOAT, B,G,R,A),
+    SWIZZLE('X','R','4','H', R16G16B16A16_SFLOAT, B,G,R,ONE),
+    RGB('B','G','4','8', R16G16B16_UNORM),
+    SWIZZLE('R','G','4','8', R16G16B16_UNORM, B,G,R,ONE),
+    RGB('G','R',' ','H', R16G16_SFLOAT),
+    RGB('B','G','R','H', R16G16B16_SFLOAT),
+    RGB('R','8',' ',' ', R8_UNORM),
+    RGB('R','1','6',' ', R16_UNORM),
+    RGB('G','R','8','8', R8G8_UNORM),
+    RGB('G','R','3','2', R16G16_UNORM),
+    SWIZZLE('R','G','8','8', R8G8_UNORM, G,R,ZERO,ONE),
+    SWIZZLE('R','G','3','2', R16G16_UNORM, G,R,ZERO,ONE),
+    YUV420('N','V','1','2', G8_B8R8_2PLANE_420_UNORM, false),
+    YUV420('N','V','2','1', G8_B8R8_2PLANE_420_UNORM, true),
+    YUV422('N','V','1','6', G8_B8R8_2PLANE_422_UNORM, false),
+    YUV422('N','V','6','1', G8_B8R8_2PLANE_422_UNORM, true),
+    YUV420('Y','U','1','2', G8_B8_R8_3PLANE_420_UNORM, false),
+    YUV420('Y','V','1','2', G8_B8_R8_3PLANE_420_UNORM, true),
+    YUV422('Y','U','1','6', G8_B8_R8_3PLANE_422_UNORM, false),
+    YUV422('Y','V','1','6', G8_B8_R8_3PLANE_422_UNORM, true),
+    YUV('Y','U','2','4', G8_B8_R8_3PLANE_444_UNORM, false),
+    YUV('Y','V','2','4', G8_B8_R8_3PLANE_444_UNORM, true),
+    YUV422('Y','U','Y','V', G8B8G8R8_422_UNORM, false),
+    YUV422('Y','V','Y','U', G8B8G8R8_422_UNORM, true),
+    YUV422('U','Y','V','Y', B8G8R8G8_422_UNORM, false),
+    YUV422('V','Y','U','Y', B8G8R8G8_422_UNORM, true),
+    YUV444('N','V','2','4', G8_B8R8_2PLANE_444_UNORM_EXT, false),
+    YUV444('N','V','4','2', G8_B8R8_2PLANE_444_UNORM_EXT, true),
+    YUV444('P','4','1','0', G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT, false),
+    YUV444('P','4','1','2', G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT, false),
+    YUV444('P','4','1','6', G16_B16R16_2PLANE_444_UNORM_EXT, false),
+    YUV_SWIZZLE('A','Y','U','V', R8G8B8A8_UNORM, R,B,G,A),
+    YUV_SWIZZLE('X','Y','U','V', R8G8B8A8_UNORM, R,B,G,ONE),
+    YUV_SWIZZLE('A','V','U','Y', R8G8B8A8_UNORM, B,R,G,A),
+    YUV_SWIZZLE('X','V','U','Y', R8G8B8A8_UNORM, B,R,G,ONE),
+    YUV_SWIZZLE('V','U','2','4', R8G8B8_UNORM, B,R,G,ONE),
+    YUV_SWIZZLE('X','Y','3','0', A2B10G10R10_UNORM_PACK32, B,R,G,ONE),
+    YUV_SWIZZLE('Y','4','1','0', A2B10G10R10_UNORM_PACK32, B,G,R,A),
+    YUV_SWIZZLE('Y','4','1','2', R16G16B16A16_UNORM, B,G,R,A),
+    YUV_SWIZZLE('Y','4','1','6', R16G16B16A16_UNORM, B,G,R,A),
+    YUV422('Y','2','1','0', G10X6B10X6G10X6R10X6_422_UNORM_4PACK16, false),
+    YUV422('Y','2','1','2', G12X4B12X4G12X4R12X4_422_UNORM_4PACK16, false),
+    YUV422('Y','2','1','6', G16B16G16R16_422_UNORM, false),
+    YUV420('P','0','1','0', G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16, false),
+    YUV420('P','0','1','2', G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16, false),
+    YUV420('P','0','1','6', G16_B16R16_2PLANE_420_UNORM, false),
+    YUV422('P','2','1','0', G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16, false),
+    YUV422('P','2','1','2', G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16, false),
+    YUV422('P','2','1','6', G16_B16R16_2PLANE_422_UNORM, false),
+};
+// clang-format on
+#undef RGB
+#undef OPAQUE
+#undef YUV
+#undef YUV_LAYOUT
+#undef YUV420
+#undef YUV422
+#undef SWIZZLE
+#undef YUV444
+#undef YUV_SWIZZLE
+
 static bool _dmabuf_importable(struct rn_vk_context *ctx, VkFormat format,
-                               uint64_t modifier) {
+                               uint64_t modifier, VkImageCreateFlags flags,
+                               uint32_t *descriptors,
+                               const struct rn_vk_dmabuf_desc_t *desc) {
   VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod = {
       .sType =
           VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT,
@@ -3581,24 +3952,212 @@ static bool _dmabuf_importable(struct rn_vk_context *ctx, VkFormat format,
       .type = VK_IMAGE_TYPE_2D,
       .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
       .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+      .flags = flags,
+  };
+  VkSamplerYcbcrConversionImageFormatProperties ycbcr = {
+      .sType =
+          VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES,
   };
   VkExternalImageFormatProperties external_props = {
       .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
+      .pNext = descriptors ? &ycbcr : NULL,
   };
   VkImageFormatProperties2 props = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
       .pNext = &external_props,
   };
 
-  return ctx->image_properties(ctx->physical_device, &info, &props) ==
-             VK_SUCCESS &&
+  VkResult status = ctx->image_properties(ctx->physical_device, &info, &props);
+  if (descriptors)
+    *descriptors = ycbcr.combinedImageSamplerDescriptorCount;
+  if (status == VK_SUCCESS && desc &&
+      (desc->width > props.imageFormatProperties.maxExtent.width ||
+       desc->height > props.imageFormatProperties.maxExtent.height))
+    return false;
+  if (flags & VK_IMAGE_CREATE_DISJOINT_BIT &&
+      external_props.externalMemoryProperties.externalMemoryFeatures &
+          VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT)
+    return false;
+  return status == VK_SUCCESS &&
          (external_props.externalMemoryProperties.externalMemoryFeatures &
           VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+}
+
+static rn_result_t _dmabuf_conversion(struct rn_vk_context *ctx,
+                                      const struct rn_vk_drm_format *format,
+                                      const struct rn_vk_dmabuf_desc_t *desc,
+                                      struct rn_vk_conversion **out) {
+  *out = NULL;
+  if (!format->yuv || format->packed)
+    return RN_OK;
+  if ((unsigned)desc->ycbcr_model > RN_VK_YCBCR_BT2020 ||
+      (unsigned)desc->ycbcr_range > RN_VK_YCBCR_FULL ||
+      (unsigned)desc->chroma_x > RN_VK_CHROMA_MIDPOINT ||
+      (unsigned)desc->chroma_y > RN_VK_CHROMA_MIDPOINT)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  VkDrmFormatModifierPropertiesListEXT list = {
+      .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT};
+  VkFormatProperties2 props = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+                               .pNext = &list};
+
+  ctx->format_properties(ctx->physical_device, format->vk, &props);
+  VkDrmFormatModifierPropertiesEXT *mods = ctx->alloc->alloc(
+      list.drmFormatModifierCount * sizeof(*mods), ctx->alloc->ctx);
+  if (!mods)
+    return RN_ERROR_OUT_OF_MEMORY;
+
+  list.pDrmFormatModifierProperties = mods;
+  ctx->format_properties(ctx->physical_device, format->vk, &props);
+  VkFormatFeatureFlags flags = 0;
+
+  for (uint32_t i = 0; i < list.drmFormatModifierCount; ++i)
+    if (mods[i].drmFormatModifier == desc->modifier)
+      flags = mods[i].drmFormatModifierTilingFeatures;
+
+  ctx->alloc->free(mods, ctx->alloc->ctx);
+
+  VkChromaLocation locations[2];
+
+  unsigned requested[2] = {desc->chroma_x, desc->chroma_y};
+  for (unsigned i = 0; i < 2; ++i) {
+    if (!requested[i])
+      requested[i] = flags & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT
+                         ? RN_VK_CHROMA_COSITED
+                         : RN_VK_CHROMA_MIDPOINT;
+    VkFormatFeatureFlags required =
+        requested[i] == RN_VK_CHROMA_COSITED
+            ? VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT
+            : VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
+    if (!(flags & required))
+      return RN_ERROR_INVALID_ARGUMENT;
+    locations[i] = requested[i] == RN_VK_CHROMA_COSITED
+                       ? VK_CHROMA_LOCATION_COSITED_EVEN
+                       : VK_CHROMA_LOCATION_MIDPOINT;
+  }
+  static const VkSamplerYcbcrModelConversion models[] = {
+      VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601,
+      VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709,
+      VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020};
+  VkSamplerYcbcrConversionCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO,
+      .format = format->vk,
+      .ycbcrModel = models[desc->ycbcr_model],
+      .ycbcrRange = desc->ycbcr_range == RN_VK_YCBCR_FULL
+                        ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL
+                        : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW,
+      .components = {.r = format->swap_rb ? VK_COMPONENT_SWIZZLE_B
+                                          : VK_COMPONENT_SWIZZLE_IDENTITY,
+                     .b = format->swap_rb ? VK_COMPONENT_SWIZZLE_R
+                                          : VK_COMPONENT_SWIZZLE_IDENTITY},
+      .xChromaOffset = locations[0],
+      .yChromaOffset = locations[1],
+      .chromaFilter =
+          flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT
+              ? VK_FILTER_LINEAR
+              : VK_FILTER_NEAREST,
+  };
+  if (format->components.r || format->components.g || format->components.b ||
+      format->components.a)
+    info.components = format->components;
+  uint32_t descriptors;
+  if (!_dmabuf_importable(ctx, format->vk, desc->modifier, 0, &descriptors,
+                          NULL) ||
+      !descriptors)
+    return RN_ERROR_INVALID_ARGUMENT;
+  for (struct rn_vk_conversion *c = ctx->conversions; c; c = c->next)
+    if (c->info.format == info.format &&
+        c->info.ycbcrModel == info.ycbcrModel &&
+        c->info.ycbcrRange == info.ycbcrRange &&
+        c->info.components.r == info.components.r &&
+        c->info.components.g == info.components.g &&
+        c->info.components.b == info.components.b &&
+        c->info.components.a == info.components.a &&
+        c->info.xChromaOffset == info.xChromaOffset &&
+        c->info.yChromaOffset == info.yChromaOffset &&
+        c->info.chromaFilter == info.chromaFilter && c->features == flags &&
+        c->descriptors == descriptors) {
+      *out = c;
+      return RN_OK;
+    }
+  struct rn_vk_conversion *c = ctx->alloc->alloc(sizeof(*c), ctx->alloc->ctx);
+  if (!c)
+    return RN_ERROR_OUT_OF_MEMORY;
+  memset(c, 0, sizeof(*c));
+  c->info = info;
+  c->descriptors = descriptors;
+  c->features = flags;
+  rn_result_t result = _result(
+      ctx, ctx->create_conversion(ctx->device, &info, NULL, &c->conversion),
+      "vkCreateSamplerYcbcrConversionKHR");
+  if (result != RN_OK) {
+    ctx->alloc->free(c, ctx->alloc->ctx);
+    return result;
+  }
+  VkSamplerYcbcrConversionInfo conversion = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
+      .conversion = c->conversion};
+
+  VkFilter filter = flags & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+                        ? VK_FILTER_LINEAR
+                        : VK_FILTER_NEAREST;
+  if (!(flags &
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_BIT))
+    filter = info.chromaFilter;
+  VkSamplerCreateInfo sampler = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .pNext = &conversion,
+      .magFilter = filter,
+      .minFilter = filter,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .maxAnisotropy = 1.0f,
+  };
+  result =
+      _result(ctx, vkCreateSampler(ctx->device, &sampler, NULL, &c->sampler),
+              "vkCreateSampler(YCbCr)");
+  if (result != RN_OK) {
+    ctx->destroy_conversion(ctx->device, c->conversion, NULL);
+    ctx->alloc->free(c, ctx->alloc->ctx);
+    return result;
+  }
+  c->next = ctx->conversions;
+  ctx->conversions = c;
+  *out = c;
+  return RN_OK;
 }
 
 static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
   if (!ctx->dmabuf_enabled)
     return RN_OK;
+
+  ctx->create_conversion =
+      (PFN_vkCreateSamplerYcbcrConversionKHR)vkGetDeviceProcAddr(
+          ctx->device, "vkCreateSamplerYcbcrConversionKHR");
+  ctx->destroy_conversion =
+      (PFN_vkDestroySamplerYcbcrConversionKHR)vkGetDeviceProcAddr(
+          ctx->device, "vkDestroySamplerYcbcrConversionKHR");
+  if (ctx->ycbcr_enabled &&
+      (!ctx->create_conversion || !ctx->destroy_conversion))
+    return RN_ERROR_BACKEND;
+  const VkSamplerCreateInfo rgb_sampler = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_LINEAR,
+      .minFilter = VK_FILTER_LINEAR,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .maxAnisotropy = 1.0f,
+  };
+  rn_result_t sampler_result = _result(
+      ctx,
+      vkCreateSampler(ctx->device, &rgb_sampler, NULL, &ctx->immutable_rgb),
+      "vkCreateSampler(immutable RGB)");
+  if (sampler_result != RN_OK)
+    return sampler_result;
 
   ctx->format_properties =
       (PFN_vkGetPhysicalDeviceFormatProperties2KHR)vkGetInstanceProcAddr(
@@ -3632,14 +4191,20 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
     return RN_OK;
   }
 
-  for (size_t f = 0; f < sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]); ++f) {
+  uint32_t max_descriptors = 1;
+  for (size_t f = 0; f < sizeof(_dmabuf_formats) / sizeof(_dmabuf_formats[0]);
+       ++f) {
+    if ((_dmabuf_formats[f].yuv && !_dmabuf_formats[f].packed &&
+         !ctx->ycbcr_enabled) ||
+        (_dmabuf_formats[f].two_plane_444 && !ctx->ycbcr_444_enabled))
+      continue;
     VkDrmFormatModifierPropertiesListEXT list = {
         .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
     };
     VkFormatProperties2 props = {.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
                                  .pNext = &list};
 
-    ctx->format_properties(ctx->physical_device, _dmabuf_rgb[f].vk, &props);
+    ctx->format_properties(ctx->physical_device, _dmabuf_formats[f].vk, &props);
 
     if (!list.drmFormatModifierCount)
       continue;
@@ -3651,19 +4216,37 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
       return RN_ERROR_OUT_OF_MEMORY;
 
     list.pDrmFormatModifierProperties = mods;
-    ctx->format_properties(ctx->physical_device, _dmabuf_rgb[f].vk, &props);
+    ctx->format_properties(ctx->physical_device, _dmabuf_formats[f].vk, &props);
 
     for (uint32_t i = 0; i < list.drmFormatModifierCount; ++i) {
       VkFormatFeatureFlags required =
           VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
           VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 
-      if ((mods[i].drmFormatModifierTilingFeatures & required) != required ||
+      if (_dmabuf_formats[f].yuv && !_dmabuf_formats[f].packed)
+        required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+      VkFormatFeatureFlags chroma =
+          VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT |
+          VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT;
+      if ((_dmabuf_formats[f].yuv && !_dmabuf_formats[f].packed &&
+           !(mods[i].drmFormatModifierTilingFeatures & chroma)) ||
+          (mods[i].drmFormatModifierTilingFeatures & required) != required ||
           !mods[i].drmFormatModifierPlaneCount ||
           mods[i].drmFormatModifierPlaneCount > RN_VK_DMABUF_MAX_PLANES ||
-          !_dmabuf_importable(ctx, _dmabuf_rgb[f].vk,
-                              mods[i].drmFormatModifier))
+          !_dmabuf_importable(ctx, _dmabuf_formats[f].vk,
+                              mods[i].drmFormatModifier, 0, NULL, NULL))
         continue;
+
+      if (_dmabuf_formats[f].yuv && !_dmabuf_formats[f].packed) {
+        uint32_t descriptors = 0;
+        if (!_dmabuf_importable(ctx, _dmabuf_formats[f].vk,
+                                mods[i].drmFormatModifier, 0, &descriptors,
+                                NULL) ||
+            !descriptors)
+          continue;
+        if (descriptors > max_descriptors)
+          max_descriptors = descriptors;
+      }
 
       struct rn_vk_dmabuf_format_t *formats = ctx->alloc->realloc(
           ctx->dmabuf_formats,
@@ -3678,7 +4261,7 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
 
       /* insert format */
       formats[ctx->dmabuf_format_count++] = (struct rn_vk_dmabuf_format_t){
-          .format = _dmabuf_rgb[f].drm,
+          .format = _dmabuf_formats[f].drm,
           .modifier = mods[i].drmFormatModifier,
           .plane_count = mods[i].drmFormatModifierPlaneCount,
       };
@@ -3687,6 +4270,16 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
     ctx->alloc->free(mods, ctx->alloc->ctx);
   }
 
+  const VkPhysicalDeviceLimits *limits = &ctx->properties.limits;
+  uint32_t limit = limits->maxPerStageDescriptorSamplers;
+  if (limits->maxPerStageDescriptorSampledImages < limit)
+    limit = limits->maxPerStageDescriptorSampledImages;
+  if (limits->maxDescriptorSetSamplers < limit)
+    limit = limits->maxDescriptorSetSamplers;
+  if (limits->maxDescriptorSetSampledImages < limit)
+    limit = limits->maxDescriptorSetSampledImages;
+  limit /= max_descriptors;
+  ctx->texture_slots = limit >= 16 ? 16 : limit >= 8 ? 8 : 4;
   return RN_OK;
 }
 
@@ -3766,7 +4359,8 @@ static void _dmabuf_forget(struct rn_vk_context *ctx,
 }
 
 static void _dmabuf_close(struct rn_vk_texture *texture) {
-  close(texture->dmabuf_fd);
+  for (uint32_t i = 0; i < texture->dmabuf_memory_count; ++i)
+    close(texture->dmabuf_fd[i]);
 }
 
 static rn_result_t _dmabuf_acquire_commands(struct rn_vk_context *ctx,
@@ -3831,12 +4425,31 @@ static rn_result_t _dmabuf_acquire(struct rn_vk_context *ctx,
   if (fence_fd >= 0) {
     fd = fcntl(fence_fd, F_DUPFD_CLOEXEC, 0);
   } else {
-    struct dma_buf_export_sync_file sync = {.flags = DMA_BUF_SYNC_READ, .fd = -1};
-    if (ioctl(texture->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync) < 0) {
-      _VK_ERROR(ctx->log, "cannot export dma-buf acquire fence: %s", strerror(errno));
-      return RN_ERROR_BACKEND;
+    fd = -1;
+    for (uint32_t i = 0; i < texture->dmabuf_memory_count; ++i) {
+      struct dma_buf_export_sync_file sync = {.flags = DMA_BUF_SYNC_READ,
+                                              .fd = -1};
+      if (ioctl(texture->dmabuf_fd[i], DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync) <
+          0) {
+        _VK_ERROR(ctx->log, "cannot export dma-buf acquire fence: %s",
+                  strerror(errno));
+        if (fd >= 0)
+          close(fd);
+        return RN_ERROR_BACKEND;
+      }
+      if (fd < 0) {
+        fd = sync.fd;
+      } else {
+        struct sync_merge_data merge = {.name = "runara-planes",
+                                        .fd2 = sync.fd};
+        int status = ioctl(fd, SYNC_IOC_MERGE, &merge);
+        close(sync.fd);
+        close(fd);
+        if (status < 0)
+          return RN_ERROR_BACKEND;
+        fd = merge.fence;
+      }
     }
-    fd = sync.fd;
   }
   if (fd < 0)
     return RN_ERROR_BACKEND;
@@ -3867,13 +4480,26 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
 
   /* get dmabuf format (drm -> vk) from desciption format */
   size_t f;
-  for (f = 0; f < sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]); ++f) {
-    if (_dmabuf_rgb[f].drm == desc->format)
+  for (f = 0; f < sizeof(_dmabuf_formats) / sizeof(_dmabuf_formats[0]); ++f) {
+    if (_dmabuf_formats[f].drm == desc->format)
       break;
   }
 
-  if (f == sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]))
+  if (f == sizeof(_dmabuf_formats) / sizeof(_dmabuf_formats[0]))
     return RN_ERROR_INVALID_ARGUMENT;
+
+  if (((_dmabuf_formats[f].subsampled & 1u) && (desc->width & 1u)) ||
+      ((_dmabuf_formats[f].subsampled & 2u) && (desc->height & 1u)))
+    return RN_ERROR_INVALID_ARGUMENT;
+  if (_dmabuf_formats[f].packed &&
+      ((unsigned)desc->ycbcr_model > RN_VK_YCBCR_BT2020 ||
+       (unsigned)desc->ycbcr_range > RN_VK_YCBCR_FULL))
+    return RN_ERROR_INVALID_ARGUMENT;
+  struct rn_vk_conversion *conversion;
+  rn_result_t conversion_result =
+      _dmabuf_conversion(ctx, &_dmabuf_formats[f], desc, &conversion);
+  if (conversion_result != RN_OK)
+    return conversion_result;
 
   VkSubresourceLayout planes[RN_VK_DMABUF_MAX_PLANES] = {0};
 
@@ -3894,11 +4520,23 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
       .pNext = &modifier,
       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
   };
+  bool disjoint = false;
+  for (uint32_t i = 1; i < desc->plane_count; ++i) {
+    struct stat plane;
+    if (fstat(desc->planes[i].fd, &plane) < 0)
+      return RN_ERROR_INVALID_ARGUMENT;
+    disjoint |= plane.st_dev != stat->st_dev || plane.st_ino != stat->st_ino;
+  }
+  VkImageCreateFlags flags = disjoint ? VK_IMAGE_CREATE_DISJOINT_BIT : 0;
+  if (!_dmabuf_importable(ctx, _dmabuf_formats[f].vk, desc->modifier, flags,
+                          NULL, desc))
+    return RN_ERROR_INVALID_ARGUMENT;
   VkImageCreateInfo info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .flags = flags,
       .pNext = &external,
       .imageType = VK_IMAGE_TYPE_2D,
-      .format = _dmabuf_rgb[f].vk,
+      .format = _dmabuf_formats[f].vk,
       .extent = {desc->width, desc->height, 1},
       .mipLevels = 1,
       .arrayLayers = 1,
@@ -3908,7 +4546,9 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
   VkImage        native = VK_NULL_HANDLE;
-  VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceMemory memory[RN_VK_DMABUF_MAX_PLANES] = {0};
+  int sync_fds[RN_VK_DMABUF_MAX_PLANES] = {-1, -1, -1, -1};
+  uint32_t memory_count = disjoint ? desc->plane_count : 1;
   rn_result_t    result =
       _result(ctx, vkCreateImage(ctx->device, &info, NULL, &native),
               "vkCreateImage(dmabuf)");
@@ -3916,93 +4556,121 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
   if (result != RN_OK)
     return result;
 
-  VkMemoryRequirements requirements;
-  vkGetImageMemoryRequirements(ctx->device, native, &requirements);
-  VkMemoryFdPropertiesKHR properties = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
-  result =
-      _result(ctx,
-              ctx->fd_properties(ctx->device,
-                                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-                                 desc->planes[0].fd, &properties),
-              "vkGetMemoryFdPropertiesKHR");
-
-  if (result != RN_OK)
-    goto fail;
-
-  uint32_t type = 0;
-  uint32_t bits = properties.memoryTypeBits & requirements.memoryTypeBits;
-
-  while (type < 32 && !(bits & (1u << type)))
-    ++type;
-
-  if (type == 32 || stat->st_size <= 0 ||
-      (uint64_t)stat->st_size < requirements.size) {
-    result = RN_ERROR_INVALID_ARGUMENT;
-    goto fail;
-  }
-
-  /* vulkan takes ownership of the imported fd on success. duplicate it so
-   * the caller keeps ownership of the original */
-  int fd = fcntl(desc->planes[0].fd, F_DUPFD_CLOEXEC, 0);
-
-  if (fd < 0) {
+  PFN_vkGetImageMemoryRequirements2KHR get_requirements =
+      (PFN_vkGetImageMemoryRequirements2KHR)vkGetDeviceProcAddr(
+          ctx->device, "vkGetImageMemoryRequirements2KHR");
+  PFN_vkBindImageMemory2KHR bind_memory =
+      (PFN_vkBindImageMemory2KHR)vkGetDeviceProcAddr(ctx->device,
+                                                     "vkBindImageMemory2KHR");
+  if (!get_requirements || !bind_memory) {
     result = RN_ERROR_BACKEND;
     goto fail;
   }
-
-  VkMemoryDedicatedAllocateInfo dedicated = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-      .image = native,
-  };
-  VkImportMemoryFdInfoKHR import = {
-      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
-      .pNext = &dedicated,
-      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-      .fd = fd,
-  };
-  VkMemoryAllocateInfo allocation = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .pNext = &import,
-      .allocationSize = stat->st_size,
-      .memoryTypeIndex = type,
-  };
-  result =
-      _result(ctx, vkAllocateMemory(ctx->device, &allocation, NULL, &memory),
-              "vkAllocateMemory(dmabuf)");
-
-  if (result != RN_OK) {
-    close(fd);
-    goto fail;
+  VkBindImageMemoryInfo binds[RN_VK_DMABUF_MAX_PLANES] = {0};
+  VkBindImagePlaneMemoryInfo bind_planes[RN_VK_DMABUF_MAX_PLANES] = {0};
+  for (uint32_t i = 0; i < memory_count; ++i) {
+    VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT << i;
+    VkImagePlaneMemoryRequirementsInfo plane = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO,
+        .planeAspect = aspect};
+    VkImageMemoryRequirementsInfo2 req_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+        .pNext = disjoint ? &plane : NULL,
+        .image = native};
+    VkMemoryRequirements2 requirements = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    get_requirements(ctx->device, &req_info, &requirements);
+    VkMemoryFdPropertiesKHR properties = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
+    result =
+        _result(ctx,
+                ctx->fd_properties(
+                    ctx->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+                    desc->planes[i].fd, &properties),
+                "vkGetMemoryFdPropertiesKHR");
+    if (result != RN_OK)
+      goto fail;
+    struct stat plane_stat;
+    uint32_t type = 0;
+    uint32_t bits = properties.memoryTypeBits &
+                    requirements.memoryRequirements.memoryTypeBits;
+    while (type < 32 && !(bits & (1u << type)))
+      ++type;
+    if (type == 32 || fstat(desc->planes[i].fd, &plane_stat) < 0 ||
+        plane_stat.st_size <= 0 ||
+        (uint64_t)plane_stat.st_size < requirements.memoryRequirements.size) {
+      result = RN_ERROR_INVALID_ARGUMENT;
+      goto fail;
+    }
+    /* Vulkan takes ownership on success; the caller retains its original FD. */
+    int import_fd = fcntl(desc->planes[i].fd, F_DUPFD_CLOEXEC, 0);
+    if (import_fd < 0) {
+      result = RN_ERROR_BACKEND;
+      goto fail;
+    }
+    VkMemoryDedicatedAllocateInfo dedicated = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = native};
+    VkImportMemoryFdInfoKHR import = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+        .pNext = disjoint ? NULL : &dedicated,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        .fd = import_fd};
+    VkMemoryAllocateInfo allocation = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &import,
+        .allocationSize = plane_stat.st_size,
+        .memoryTypeIndex = type};
+    result = _result(
+        ctx, vkAllocateMemory(ctx->device, &allocation, NULL, &memory[i]),
+        "vkAllocateMemory(dmabuf)");
+    if (result != RN_OK) {
+      close(import_fd);
+      goto fail;
+    }
+    bind_planes[i] = (VkBindImagePlaneMemoryInfo){
+        .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO,
+        .planeAspect = aspect};
+    binds[i] = (VkBindImageMemoryInfo){
+        .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,
+        .pNext = disjoint ? &bind_planes[i] : NULL,
+        .image = native,
+        .memory = memory[i]};
+    sync_fds[i] = fcntl(desc->planes[i].fd, F_DUPFD_CLOEXEC, 0);
+    if (sync_fds[i] < 0) {
+      result = RN_ERROR_BACKEND;
+      goto fail;
+    }
   }
-
-  result = _result(ctx, vkBindImageMemory(ctx->device, native, memory, 0),
-                   "vkBindImageMemory(dmabuf)");
-
+  result = _result(ctx, bind_memory(ctx->device, memory_count, binds),
+                   "vkBindImageMemory2KHR(dmabuf)");
   if (result != RN_OK)
     goto fail;
 
-  /* keep a separate fd for later synchronization. the import fd now belongs
-   * to vulkan */
-  fd = fcntl(desc->planes[0].fd, F_DUPFD_CLOEXEC, 0);
+  result = _wrap_vk_image(ctx, native, _dmabuf_formats[f].vk, desc->width,
+                          desc->height, _dmabuf_formats[f].opaque,
+                          conversion ? NULL : &_dmabuf_formats[f].components,
+                          conversion, image);
 
-  if (fd < 0) {
-    result = RN_ERROR_BACKEND;
+  if (result != RN_OK)
     goto fail;
-  }
-
-  result = _wrap_vk_image(ctx, native, _dmabuf_rgb[f].vk, desc->width,
-                          desc->height, _dmabuf_rgb[f].opaque, image);
-
-  if (result != RN_OK) {
-    close(fd);
-    goto fail;
-  }
 
   struct rn_vk_texture *texture = _texture(ctx, image->texture);
+  if (_dmabuf_formats[f].packed) {
+    uint32_t depth =
+        _dmabuf_formats[f].vk == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ? 10
+        : _dmabuf_formats[f].vk == VK_FORMAT_R16G16B16A16_UNORM     ? 16
+                                                                    : 8;
+    if (desc->format == RN_FOURCC('Y', '4', '1', '2'))
+      depth = 12;
+    texture->packed_yuv = 1u | ((uint32_t)desc->ycbcr_model << 1) |
+                          (desc->ycbcr_range == RN_VK_YCBCR_FULL ? 8u : 0u) |
+                          (depth << 4);
+  }
   texture->dmabuf = true;
-  texture->dmabuf_memory = memory;
-  texture->dmabuf_fd = fd;
+  texture->dmabuf_memory_count = memory_count;
+  memcpy(texture->dmabuf_memory, memory, sizeof(memory));
+  memcpy(texture->dmabuf_fd, sync_fds, sizeof(sync_fds));
   texture->acquire_fd = -1;
   texture->dmabuf_device = stat->st_dev;
   texture->dmabuf_inode = stat->st_ino;
@@ -4013,9 +4681,12 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
 fail:
   vkDestroyImage(ctx->device, native, NULL);
 
-  if (memory)
-    vkFreeMemory(ctx->device, memory, NULL);
-
+  for (uint32_t i = 0; i < memory_count; ++i) {
+    if (memory[i])
+      vkFreeMemory(ctx->device, memory[i], NULL);
+    if (sync_fds[i] >= 0)
+      close(sync_fds[i]);
+  }
   return result;
 }
 
@@ -4076,8 +4747,7 @@ rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
   for (uint32_t i = 0; i < desc->plane_count; ++i) {
     struct stat plane;
 
-    if (!desc->planes[i].stride || fstat(desc->planes[i].fd, &plane) < 0 ||
-        plane.st_dev != stat.st_dev || plane.st_ino != stat.st_ino)
+    if (!desc->planes[i].stride || fstat(desc->planes[i].fd, &plane) < 0)
       return RN_ERROR_INVALID_ARGUMENT;
   }
 
@@ -4098,10 +4768,21 @@ rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
         texture->width != desc->width || texture->height != desc->height ||
         texture->dmabuf_desc.format != desc->format ||
         texture->dmabuf_desc.modifier != desc->modifier ||
-        texture->dmabuf_desc.plane_count != desc->plane_count)
+        texture->dmabuf_desc.plane_count != desc->plane_count ||
+        texture->dmabuf_desc.ycbcr_model != desc->ycbcr_model ||
+        texture->dmabuf_desc.ycbcr_range != desc->ycbcr_range ||
+        texture->dmabuf_desc.chroma_x != desc->chroma_x ||
+        texture->dmabuf_desc.chroma_y != desc->chroma_y)
       return RN_ERROR_INVALID_ARGUMENT;
 
     for (uint32_t i = 0; i < desc->plane_count; ++i) {
+      struct stat original, incoming;
+      uint32_t memory_index = texture->dmabuf_memory_count == 1 ? 0 : i;
+      if (fstat(texture->dmabuf_fd[memory_index], &original) < 0 ||
+          fstat(desc->planes[i].fd, &incoming) < 0 ||
+          original.st_dev != incoming.st_dev ||
+          original.st_ino != incoming.st_ino)
+        return RN_ERROR_INVALID_ARGUMENT;
       if (texture->dmabuf_desc.planes[i].offset != desc->planes[i].offset ||
           texture->dmabuf_desc.planes[i].stride != desc->planes[i].stride)
         return RN_ERROR_INVALID_ARGUMENT;
