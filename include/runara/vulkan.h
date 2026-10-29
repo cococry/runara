@@ -67,6 +67,11 @@ struct rn_vk_init_options_t {
 
   /* Enable optional Linux DMA-BUF imports if supported by device */ 
   bool enable_dmabuf_import;
+
+  /* Enable sync-file export for external rendering.
+   * Initialization fails if the device cannot export sync-file semaphores.
+   * We reject this option in managed mode. */
+  bool enable_render_fence_export;
 };
 
 /* Describes all Vulkan native handles managed by Runara */
@@ -92,6 +97,9 @@ struct rn_vk_external_target_desc_t {
   VkFormat format;
   uint32_t width;
   uint32_t height;
+  /* Specifies whether or not to create a VK_QUEUE_FAMILY_FOREIGN_EXT queue for
+   * the external render target. */
+  bool foreign;
 };
 
 struct rn_state_t;
@@ -147,6 +155,13 @@ rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
 /* Wait for the most recent Runara rendering submission to finish.
  * This is a correct but blocking synchronization path. */
 rn_result_t rn_vk_wait_for_render(struct rn_state_t *state);
+
+/* Get an exported completion fence of the latest successful rn_end() without
+ * waiting. External mode and enable_render_fence_export at initialization is
+ * required for this to work. The caller owns the returned sync-file fd and must
+ * close it. -1 on RN_OK means rendering has already completed. */
+rn_result_t rn_vk_export_render_fence(struct rn_state_t *state,
+                                      int               *out_sync_file_fd);
 
 /* Nonblocking rendering completion query, called between frames. Submission
  * IDs start at 1; 0 means no submissions. Every ID <= last_completed has finished

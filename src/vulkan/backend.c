@@ -36,6 +36,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef __linux__
+#include <unistd.h>
+#endif
 #include <vk_mem_alloc.h>
 
 #define RN_SUBSYS_NAME "VULKAN"
@@ -133,6 +137,7 @@ struct rn_vk_pipeline {
 };
 
 struct rn_vk_external_target {
+  bool          foreign;
   VkImage image;
   VkImageView view;
   VkFramebuffer framebuffer;
@@ -169,6 +174,8 @@ struct rn_vk_frame {
   VkSemaphore image_available;
   VkFence fence;
   uint64_t submission;
+  VkSemaphore           render_done;
+  bool                  render_fence_pending;
   VkSemaphore *acquire_semaphores, *wait_semaphores;
   VkPipelineStageFlags *wait_stages;
   uint32_t acquire_capacity, wait_count;
@@ -197,6 +204,7 @@ struct rn_vk_context {
   struct rn_vk_frame frames[RN_VK_FRAMES_IN_FLIGHT];
   uint32_t frame_index;
   uint64_t submitted, completed;
+  PFN_vkGetSemaphoreFdKHR get_semaphore_fd;
 
   VkPhysicalDevice physical_device;
   VkDevice device;
@@ -458,7 +466,8 @@ static rn_result_t _create_instance(struct rn_vk_context *ctx) {
     extensions[extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
 
 #ifdef __linux__
-  if (ctx->config.enable_dmabuf_import) {
+  if (ctx->config.enable_dmabuf_import ||
+      ctx->config.enable_render_fence_export) {
     extensions[extension_count++] =
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
     extensions[extension_count++] =
@@ -574,6 +583,11 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
   else
     extensions[extension_count++] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME;
 
+  if (ctx->config.enable_render_fence_export) {
+    extensions[extension_count++] = VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+  }
+
   if (ctx->config.device_extension_count > 32 - extension_count ||
       (ctx->config.device_extension_count && !ctx->config.device_extensions))
     return RN_ERROR_INVALID_ARGUMENT;
@@ -628,6 +642,30 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
 
     if (!_has_device_extensions(ctx, gpu, extensions, extension_count))
       continue;
+
+    if (ctx->config.enable_render_fence_export) {
+      PFN_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR properties =
+          (PFN_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR)
+              vkGetInstanceProcAddr(
+                  ctx->instance,
+                  "vkGetPhysicalDeviceExternalSemaphorePropertiesKHR");
+
+      if (!properties)
+        continue;
+
+      const VkPhysicalDeviceExternalSemaphoreInfo info = {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+          .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+      };
+      VkExternalSemaphoreProperties external = {
+          .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
+      };
+      properties(gpu, &info, &external);
+
+      if (!(external.externalSemaphoreFeatures &
+            VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT))
+        continue;
+    }
 
     VkPhysicalDeviceProperties props = {0};
 
@@ -814,6 +852,14 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
 
   if (result != RN_OK)
     return result;
+
+  if (ctx->config.enable_render_fence_export) {
+    ctx->get_semaphore_fd = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(
+        ctx->device, "vkGetSemaphoreFdKHR");
+
+    if (!ctx->get_semaphore_fd)
+      return RN_ERROR_BACKEND;
+  }
 
   vkGetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
   return RN_OK;
@@ -1245,6 +1291,9 @@ static void _destroy_frame_commands(struct rn_vk_context *ctx) {
     if (frame->image_available)
       vkDestroySemaphore(ctx->device, frame->image_available, NULL);
 
+    if (frame->render_done)
+      vkDestroySemaphore(ctx->device, frame->render_done, NULL);
+
     if (frame->pool)
       vkDestroyCommandPool(ctx->device, frame->pool, NULL);
   }
@@ -1259,6 +1308,15 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
 
   const VkSemaphoreCreateInfo semaphore_info = {
       .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+  };
+
+  const VkExportSemaphoreCreateInfo export_info = {
+      .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+      .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+  };
+  const VkSemaphoreCreateInfo render_semaphore_info = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+      .pNext = &export_info,
   };
 
   const VkFenceCreateInfo fence_info = {
@@ -1295,6 +1353,16 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
                        vkCreateSemaphore(ctx->device, &semaphore_info, NULL,
                                          &frame->image_available),
                        "vkCreateSemaphore(image available)");
+
+      if (result != RN_OK)
+        return result;
+    }
+
+    if (ctx->config.enable_render_fence_export) {
+      result = _result(ctx,
+                       vkCreateSemaphore(ctx->device, &render_semaphore_info,
+                                         NULL, &frame->render_done),
+                       "vkCreateSemaphore(render export)");
 
       if (result != RN_OK)
         return result;
@@ -1356,6 +1424,27 @@ static rn_result_t _prepare_frame_waits(struct rn_vk_context *ctx,
   return RN_OK;
 }
 
+static rn_result_t _export_frame_render_fence(struct rn_vk_context *ctx,
+                                              struct rn_vk_frame   *frame,
+                                              int                  *out_fd) {
+  if (!frame->render_fence_pending)
+    return RN_ERROR_BAD_STATE;
+
+  const VkSemaphoreGetFdInfoKHR info = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+      .semaphore = frame->render_done,
+      .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+  };
+  rn_result_t result =
+      _result(ctx, ctx->get_semaphore_fd(ctx->device, &info, out_fd),
+              "vkGetSemaphoreFdKHR(render complete)");
+
+  if (result == RN_OK)
+    frame->render_fence_pending = false;
+
+  return result;
+}
+
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height) {
   struct rn_vk_context *ctx = backend_ctx;
@@ -1376,6 +1465,20 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
   if (frame->submission > ctx->completed)
     ctx->completed = frame->submission;
+
+#ifdef __linux__
+  if (frame->render_fence_pending) {
+    /* we consume an unclaimed signal before reusing this binary semaphore. */
+    int fd = -1;
+    result = _export_frame_render_fence(ctx, frame, &fd);
+
+    if (result != RN_OK)
+      return result;
+
+    if (fd >= 0)
+      close(fd);
+  }
+#endif
 
   /* reuse descriptor storage only after the frame slot's fence has signaled */
   for (size_t i = 0; i < ctx->pipeline_count; ++i) {
@@ -1508,7 +1611,8 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
         .oldLayout =
             target->used ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL_KHR,
+        .srcQueueFamilyIndex = target->foreign ? VK_QUEUE_FAMILY_FOREIGN_EXT
+                                               : VK_QUEUE_FAMILY_EXTERNAL_KHR,
         .dstQueueFamilyIndex = ctx->queue_family,
         .image = target->image,
         .subresourceRange =
@@ -1554,6 +1658,9 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
   for (uint32_t i = 0; i < RN_VK_MAX_BINDINGS; ++i)
     ctx->vertex_buffers[i] = RN_INVALID_HANDLE;
+
+  for (uint32_t i = 0; i < RN_VK_MAX_TEXTURES; ++i)
+    ctx->bound_textures[i] = RN_INVALID_HANDLE;
 
   VkRect2D scissor = {{(int32_t)x, (int32_t)y}, {width, height}};
 
@@ -1653,7 +1760,8 @@ static rn_result_t _end_frame(void *backend_ctx) {
         .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
         .newLayout = VK_IMAGE_LAYOUT_GENERAL,
         .srcQueueFamilyIndex = ctx->queue_family,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL_KHR,
+        .dstQueueFamilyIndex = target->foreign ? VK_QUEUE_FAMILY_FOREIGN_EXT
+                                               : VK_QUEUE_FAMILY_EXTERNAL_KHR,
         .image = target->image,
         .subresourceRange =
             {
@@ -1691,6 +1799,8 @@ static rn_result_t _end_frame(void *backend_ctx) {
 
   if (ctx->mode == RN_VK_TARGET_MANAGED)
     render_done = surface->swap_images[surface->image_index].render_done;
+  else
+    render_done = frame->render_done;
 
   const VkSubmitInfo submit = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1699,9 +1809,8 @@ static rn_result_t _end_frame(void *backend_ctx) {
       .pWaitDstStageMask = frame->wait_stages,
       .commandBufferCount = 1,
       .pCommandBuffers = &frame->command,
-      .signalSemaphoreCount = ctx->mode == RN_VK_TARGET_MANAGED ? 1u : 0u,
-      .pSignalSemaphores =
-          ctx->mode == RN_VK_TARGET_MANAGED ? &render_done : NULL,
+      .signalSemaphoreCount = render_done ? 1u : 0u,
+      .pSignalSemaphores = render_done ? &render_done : NULL,
   };
 
   VkResult status = vkQueueSubmit(ctx->queue, 1, &submit, frame->fence);
@@ -1713,6 +1822,8 @@ static rn_result_t _end_frame(void *backend_ctx) {
 
   if (target)
     target->render_fence = frame->fence;
+
+  frame->render_fence_pending = ctx->config.enable_render_fence_export;
 
   _dmabuf_release_pending(ctx);
   frame->submission = ++ctx->submitted;
@@ -3133,8 +3244,15 @@ bool rn_vk_backend_implement(struct rn_backend_impl_t *impl,
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free ||
       !options ||
       (options->mode != RN_VK_TARGET_MANAGED &&
+       options->mode != RN_VK_TARGET_EXTERNAL) ||
+      (options->enable_render_fence_export &&
        options->mode != RN_VK_TARGET_EXTERNAL))
     return false;
+
+#ifndef __linux__
+  if (options->enable_render_fence_export)
+    return false;
+#endif
 
   struct rn_vk_context *ctx = alloc->alloc(sizeof(*ctx), alloc->ctx);
 
@@ -3518,6 +3636,7 @@ rn_vk_target_register(struct rn_state_t *state,
   struct rn_vk_external_target target = {0};
 
   target.image = desc->image;
+  target.foreign = desc->foreign;
 
   target.extent = (VkExtent2D){desc->width, desc->height};
 
@@ -3606,6 +3725,33 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
 
   ctx->completed = ctx->submitted;
   return _dmabuf_release_pending(ctx);
+}
+
+rn_result_t rn_vk_export_render_fence(struct rn_state_t *state,
+                                      int               *out_sync_file_fd) {
+  if (!out_sync_file_fd)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  *out_sync_file_fd = -1;
+  struct rn_vk_context *ctx = _state_context(state);
+
+  if (!ctx)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  if (ctx->mode != RN_VK_TARGET_EXTERNAL ||
+      !ctx->config.enable_render_fence_export || ctx->frame_active ||
+      ctx->fatal || !ctx->frame_submitted)
+    return RN_ERROR_BAD_STATE;
+
+  uint32_t last =
+      (ctx->frame_index + RN_VK_FRAMES_IN_FLIGHT - 1) % RN_VK_FRAMES_IN_FLIGHT;
+  int         fd = -1;
+  rn_result_t result = _export_frame_render_fence(ctx, &ctx->frames[last], &fd);
+
+  if (result == RN_OK)
+    *out_sync_file_fd = fd;
+
+  return result;
 }
 
 rn_result_t rn_vk_submission_status(struct rn_state_t *state,
