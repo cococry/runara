@@ -53,46 +53,46 @@ struct rn_gl_buffer {
   GLuint gl_id;
   GLenum target;
   size_t size;
-  bool   alive;
+  bool alive;
 };
 
 struct rn_gl_texture {
-  GLuint   gl_id;
-  GLenum   target;
+  GLuint gl_id;
+  GLenum target;
   uint32_t width, height, layers;
-  bool     alive;
-  bool     borrowed;
+  bool alive;
+  bool borrowed;
 };
 
 struct rn_gl_pipeline {
-  GLuint                           gl_id;
+  GLuint gl_id;
   struct rn_vertex_buffer_layout_t layouts[RN_GL_MAX_BINDINGS];
-  struct rn_vertex_attribute_t    *attributes[RN_GL_MAX_BINDINGS];
-  size_t                           layout_count;
-  enum rn_blend_mode_t             blend;
-  bool                             depth_test;
-  bool                             alive;
+  struct rn_vertex_attribute_t *attributes[RN_GL_MAX_BINDINGS];
+  size_t layout_count;
+  enum rn_blend_mode_t blend;
+  bool depth_test;
+  bool alive;
 };
 
 struct rn_gl_binding {
   rn_buffer_handle_t handle;
-  size_t             instance_base;
+  size_t instance_base;
 };
 
 struct rn_gl_context {
-  GLuint                 vertex_array;
-  struct rn_gl_buffer   *buffers;
-  size_t                 buffer_count;
-  struct rn_gl_texture  *textures;
-  size_t                 texture_count;
+  GLuint vertex_array;
+  struct rn_gl_buffer *buffers;
+  size_t buffer_count;
+  struct rn_gl_texture *textures;
+  size_t texture_count;
   struct rn_gl_pipeline *pipelines;
-  size_t                 pipeline_count;
-  rn_pipeline_handle_t   pipeline;
-  struct rn_gl_binding   bindings[RN_GL_MAX_BINDINGS];
-  rn_buffer_handle_t     index_buffer;
+  size_t pipeline_count;
+  rn_pipeline_handle_t pipeline;
+  struct rn_gl_binding bindings[RN_GL_MAX_BINDINGS];
+  rn_buffer_handle_t index_buffer;
 
   const struct rn_allocator_t *alloc;
-  const struct rn_log_t       *log;
+  const struct rn_log_t *log;
 
   const char *frag_dedicated;
   const char *frag_atlas;
@@ -100,71 +100,71 @@ struct rn_gl_context {
 
 static const char *_gl_error_name(GLenum error);
 static rn_result_t _gl_check(const struct rn_log_t *log, const char *operation);
-static bool        _handle_count_fits(size_t count);
-static bool        _gl_size_fits(size_t size);
-static struct rn_gl_buffer   *_buffer(struct rn_gl_context *ctx,
-                                      rn_buffer_handle_t    handle);
-static struct rn_gl_texture  *_texture(struct rn_gl_context *ctx,
-                                       rn_texture_handle_t   handle);
+static bool _handle_count_fits(size_t count);
+static bool _gl_size_fits(size_t size);
+static struct rn_gl_buffer *_buffer(struct rn_gl_context *ctx,
+                                    rn_buffer_handle_t handle);
+static struct rn_gl_texture *_texture(struct rn_gl_context *ctx,
+                                      rn_texture_handle_t handle);
 static struct rn_gl_pipeline *_pipeline(struct rn_gl_context *ctx,
-                                        rn_pipeline_handle_t  handle);
-static rn_result_t            _ensure_buffers(struct rn_gl_context *ctx);
-static rn_result_t            _ensure_textures(struct rn_gl_context *ctx);
-static rn_result_t            _ensure_pipelines(struct rn_gl_context *ctx);
+                                        rn_pipeline_handle_t handle);
+static rn_result_t _ensure_buffers(struct rn_gl_context *ctx);
+static rn_result_t _ensure_textures(struct rn_gl_context *ctx);
+static rn_result_t _ensure_pipelines(struct rn_gl_context *ctx);
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
 static rn_result_t _clear_color_buffer(void *backend_ctx);
 static rn_result_t _end_frame(void *backend_ctx);
-static rn_result_t _create_buffer(void                          *backend_ctx,
+static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
-                                  rn_buffer_handle_t            *out_handle);
+                                  rn_buffer_handle_t *out_handle);
 static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle);
 static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
                                  uint32_t binding, size_t offset,
                                  const void *data, size_t size);
 static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
                               const char *source);
-static GLuint _create_shader_program(struct rn_gl_context     *ctx,
+static GLuint _create_shader_program(struct rn_gl_context *ctx,
                                      enum rn_shader_pipeline_t shader_pipeline);
 static rn_result_t _create_pipeline(void *backend_ctx,
                                     const struct rn_pipeline_desc_t *desc,
                                     rn_pipeline_handle_t *out_handle);
 static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle);
-static rn_result_t _set_pipeline(void                *backend_ctx,
+static rn_result_t _set_pipeline(void *backend_ctx,
                                  rn_pipeline_handle_t handle);
 static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
                                   size_t first_instance);
-static rn_result_t _set_vertex_buffer(void              *backend_ctx,
+static rn_result_t _set_vertex_buffer(void *backend_ctx,
                                       rn_buffer_handle_t handle,
-                                      uint32_t           binding);
-static rn_result_t _set_index_buffer(void              *backend_ctx,
+                                      uint32_t binding);
+static rn_result_t _set_index_buffer(void *backend_ctx,
                                      rn_buffer_handle_t handle);
-static rn_result_t _set_uniform_2f(void                *backend_ctx,
+static rn_result_t _set_uniform_2f(void *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float value_x,
                                    float value_y);
 static rn_result_t
-                   _draw_indexed_instanced(void                                     *backend_ctx,
-                                           const struct rn_draw_indexed_instanced_t *draw);
+_draw_indexed_instanced(void *backend_ctx,
+                        const struct rn_draw_indexed_instanced_t *draw);
 static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
                                             uint32_t width, uint32_t height,
-                                            uint32_t             layers,
-                                            const void          *rgba_pixels,
-                                            size_t               data_size,
+                                            uint32_t layers,
+                                            const void *rgba_pixels,
+                                            size_t data_size,
                                             rn_texture_handle_t *out_handle);
-static rn_result_t _create_texture(void                           *backend_ctx,
+static rn_result_t _create_texture(void *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *rgba_pixels, size_t size,
                                    rn_texture_handle_t *out_handle);
 static rn_result_t
-_create_texture_array(void                                 *backend_ctx,
+_create_texture_array(void *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
-                      rn_texture_handle_t                  *out_handle);
+                      rn_texture_handle_t *out_handle);
 static rn_result_t
-            _write_texture_array_layer(void                                  *backend_ctx,
-                                       const struct rn_texture_array_write_t *write,
-                                       const void *rgba_pixels, size_t size);
+_write_texture_array_layer(void *backend_ctx,
+                           const struct rn_texture_array_write_t *write,
+                           const void *rgba_pixels, size_t size);
 static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle);
 static rn_result_t _write_texture(void *backend_ctx,
                                   const struct rn_texture_array_write_t *write,
@@ -312,9 +312,9 @@ static const char *_gl_error_name(GLenum error) {
 }
 
 static rn_result_t _gl_check(const struct rn_log_t *log,
-                             const char            *operation) {
+                             const char *operation) {
   rn_result_t result = RN_OK;
-  GLenum      error = GL_NO_ERROR;
+  GLenum error = GL_NO_ERROR;
 
   while ((error = glGetError()) != GL_NO_ERROR) {
     _RN_GL_LOG_ERROR(log, "OpenGL %s: %s (0x%04x)", operation,
@@ -331,21 +331,21 @@ static bool _handle_count_fits(size_t count) { return count < UINT32_MAX; }
 static bool _gl_size_fits(size_t size) { return size <= (size_t)PTRDIFF_MAX; }
 
 static struct rn_gl_buffer *_buffer(struct rn_gl_context *ctx,
-                                    rn_buffer_handle_t    handle) {
+                                    rn_buffer_handle_t handle) {
   return handle < ctx->buffer_count && ctx->buffers[handle].alive
              ? &ctx->buffers[handle]
              : NULL;
 }
 
 static struct rn_gl_texture *_texture(struct rn_gl_context *ctx,
-                                      rn_texture_handle_t   handle) {
+                                      rn_texture_handle_t handle) {
   return handle < ctx->texture_count && ctx->textures[handle].alive
              ? &ctx->textures[handle]
              : NULL;
 }
 
 static struct rn_gl_pipeline *_pipeline(struct rn_gl_context *ctx,
-                                        rn_pipeline_handle_t  handle) {
+                                        rn_pipeline_handle_t handle) {
   return handle < ctx->pipeline_count && ctx->pipelines[handle].alive
              ? &ctx->pipelines[handle]
              : NULL;
@@ -443,9 +443,9 @@ static rn_result_t _end_frame(void *backend_ctx) {
              : RN_ERROR_INVALID_ARGUMENT;
 }
 
-static rn_result_t _create_buffer(void                          *backend_ctx,
+static rn_result_t _create_buffer(void *backend_ctx,
                                   const struct rn_buffer_desc_t *desc,
-                                  rn_buffer_handle_t            *out_handle) {
+                                  rn_buffer_handle_t *out_handle) {
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || !desc || !out_handle || !_gl_size_fits(desc->size))
@@ -563,7 +563,7 @@ static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
   glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
 
   if (!compiled) {
-    GLchar  info_log[2048];
+    GLchar info_log[2048];
     GLsizei log_length = 0;
 
     glGetShaderInfoLog(shader, (GLsizei)sizeof(info_log), &log_length,
@@ -579,7 +579,7 @@ static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
 }
 
 static GLuint
-_create_shader_program(struct rn_gl_context     *ctx,
+_create_shader_program(struct rn_gl_context *ctx,
                        enum rn_shader_pipeline_t shader_pipeline) {
   GLuint vertex_shader = _compile_shader(ctx, GL_VERTEX_SHADER, _vertex_src);
 
@@ -618,7 +618,7 @@ _create_shader_program(struct rn_gl_context     *ctx,
   glGetProgramiv(program, GL_LINK_STATUS, &linked);
 
   if (!linked) {
-    GLchar  info_log[2048];
+    GLchar info_log[2048];
     GLsizei log_length = 0;
 
     glGetProgramInfoLog(program, (GLsizei)sizeof(info_log), &log_length,
@@ -784,7 +784,7 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
   gpu_pipeline->alive = false;
 }
 
-static rn_result_t _set_pipeline(void                *backend_ctx,
+static rn_result_t _set_pipeline(void *backend_ctx,
                                  rn_pipeline_handle_t handle) {
   struct rn_gl_context *ctx = backend_ctx;
 
@@ -882,9 +882,9 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
   return _gl_check(ctx->log, __func__);
 }
 
-static rn_result_t _set_vertex_buffer(void              *backend_ctx,
+static rn_result_t _set_vertex_buffer(void *backend_ctx,
                                       rn_buffer_handle_t handle,
-                                      uint32_t           binding) {
+                                      uint32_t binding) {
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || binding >= RN_GL_MAX_BINDINGS)
@@ -899,7 +899,7 @@ static rn_result_t _set_vertex_buffer(void              *backend_ctx,
   return _apply_binding(ctx, binding, 0);
 }
 
-static rn_result_t _set_index_buffer(void              *backend_ctx,
+static rn_result_t _set_index_buffer(void *backend_ctx,
                                      rn_buffer_handle_t handle) {
   struct rn_gl_context *ctx = backend_ctx;
 
@@ -917,7 +917,7 @@ static rn_result_t _set_index_buffer(void              *backend_ctx,
   return _gl_check(ctx->log, __func__);
 }
 
-static rn_result_t _set_uniform_2f(void                *backend_ctx,
+static rn_result_t _set_uniform_2f(void *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float value_x,
                                    float value_y) {
@@ -945,14 +945,14 @@ static rn_result_t _set_uniform_2f(void                *backend_ctx,
 }
 
 static rn_result_t
-_draw_indexed_instanced(void                                     *backend_ctx,
+_draw_indexed_instanced(void *backend_ctx,
                         const struct rn_draw_indexed_instanced_t *draw) {
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || !draw)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_gl_buffer   *index_buffer = _buffer(ctx, ctx->index_buffer);
+  struct rn_gl_buffer *index_buffer = _buffer(ctx, ctx->index_buffer);
   struct rn_gl_pipeline *gpu_pipeline = _pipeline(ctx, ctx->pipeline);
 
   if (!index_buffer || !gpu_pipeline || draw->index_count > INT_MAX ||
@@ -990,9 +990,9 @@ _draw_indexed_instanced(void                                     *backend_ctx,
 
 static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
                                             uint32_t width, uint32_t height,
-                                            uint32_t             layers,
-                                            const void          *rgba_pixels,
-                                            size_t               data_size,
+                                            uint32_t layers,
+                                            const void *rgba_pixels,
+                                            size_t data_size,
                                             rn_texture_handle_t *out_handle) {
   struct rn_gl_context *ctx = backend_ctx;
 
@@ -1065,7 +1065,7 @@ static rn_result_t _create_texture_internal(void *backend_ctx, GLenum target,
   return RN_OK;
 }
 
-static rn_result_t _create_texture(void                           *backend_ctx,
+static rn_result_t _create_texture(void *backend_ctx,
                                    const struct rn_texture_desc_t *desc,
                                    const void *rgba_pixels, size_t size,
                                    rn_texture_handle_t *out_handle) {
@@ -1079,9 +1079,9 @@ static rn_result_t _create_texture(void                           *backend_ctx,
 }
 
 static rn_result_t
-_create_texture_array(void                                 *backend_ctx,
+_create_texture_array(void *backend_ctx,
                       const struct rn_texture_array_desc_t *desc,
-                      rn_texture_handle_t                  *out_handle) {
+                      rn_texture_handle_t *out_handle) {
 
   if (!desc || desc->format != RN_TEXTURE_RGBA8)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -1092,7 +1092,7 @@ _create_texture_array(void                                 *backend_ctx,
 }
 
 static rn_result_t
-_write_texture_array_layer(void                                  *backend_ctx,
+_write_texture_array_layer(void *backend_ctx,
                            const struct rn_texture_array_write_t *write,
                            const void *rgba_pixels, size_t size) {
   struct rn_gl_context *ctx = backend_ctx;
@@ -1201,7 +1201,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
     return RN_ERROR_INVALID_ARGUMENT;
 
   struct rn_gl_texture *gpu_texture = _texture(ctx, handle);
-  GLint                 max_texture_units = 0;
+  GLint max_texture_units = 0;
 
   glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &max_texture_units);
 
@@ -1213,12 +1213,12 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
   return _gl_check(ctx->log, __func__);
 }
 
-bool rn_gl_backend_implement(struct rn_backend_impl_t    *impl,
+bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
                              const struct rn_allocator_t *alloc,
-                             const struct rn_log_t       *log,
-                             const void                  *backend_info,
-                             const char                  *frag_dedicated,
-                             const char                  *frag_atlas) {
+                             const struct rn_log_t *log,
+                             const void *backend_info,
+                             const char *frag_dedicated,
+                             const char *frag_atlas) {
 
   if (!impl || !alloc || !alloc->alloc || !alloc->realloc || !alloc->free)
     return false;
@@ -1299,7 +1299,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t    *impl,
   return true;
 }
 
-void rn_gl_backend_fini(struct rn_backend_impl_t    *backend,
+void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
                         const struct rn_allocator_t *alloc) {
 
   if (!backend || !alloc || backend->create_buffer != _create_buffer)

@@ -29,8 +29,8 @@
 
 struct rn_log_t {
   FILE *stream;
-  bool  quiet;
-  bool  verbose;
+  bool quiet;
+  bool verbose;
 
   rn_log_write_fn_t write_cb;
 };

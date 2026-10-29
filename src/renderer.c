@@ -41,11 +41,11 @@
       return check_result;                                                     \
   } while (0)
 
-static rn_result_t _submit_instance(struct rn_state_t               *state,
+static rn_result_t _submit_instance(struct rn_state_t *state,
                                     const struct rn_quad_instance_t *instance,
-                                    rn_pipeline_handle_t             pipeline,
-                                    rn_texture_handle_t              texture);
-static rn_result_t _configure_draw(struct rn_state_t   *state,
+                                    rn_pipeline_handle_t pipeline,
+                                    rn_texture_handle_t texture);
+static rn_result_t _configure_draw(struct rn_state_t *state,
                                    rn_pipeline_handle_t pipeline);
 static bool _valid_pixels(uint32_t width, uint32_t height, size_t byte_count);
 
@@ -85,10 +85,10 @@ static const struct rn_vertex_buffer_layout_t _layouts[] = {
          sizeof(_instance_attributes) / sizeof(_instance_attributes[0])},
 };
 
-static rn_result_t _submit_instance(struct rn_state_t               *state,
+static rn_result_t _submit_instance(struct rn_state_t *state,
                                     const struct rn_quad_instance_t *instance,
-                                    rn_pipeline_handle_t             pipeline,
-                                    rn_texture_handle_t              texture) {
+                                    rn_pipeline_handle_t pipeline,
+                                    rn_texture_handle_t texture) {
   struct rn_renderer_t *renderer = &state->renderer;
 
   if (!renderer->frame_active)
@@ -98,7 +98,7 @@ static rn_result_t _submit_instance(struct rn_state_t               *state,
     return RN_ERROR_OVERFLOW;
 
   struct rn_draw_batch_t *batch = NULL;
-  uint32_t                texture_slot = 0;
+  uint32_t texture_slot = 0;
 
   if (renderer->batch_count) {
     struct rn_draw_batch_t *last =
@@ -176,10 +176,10 @@ static rn_result_t _submit_instance(struct rn_state_t               *state,
   return RN_OK;
 }
 
-static rn_result_t _configure_draw(struct rn_state_t   *state,
+static rn_result_t _configure_draw(struct rn_state_t *state,
                                    rn_pipeline_handle_t pipeline) {
   struct rn_backend_impl_t *backend = &state->backend;
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
 
   RN_RENDERER_CHECK(backend->set_pipeline(backend->ctx, pipeline));
 
@@ -211,9 +211,9 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
-  struct rn_allocator_t    *allocator = &state->allocator;
+  struct rn_allocator_t *allocator = &state->allocator;
 
   if (renderer->initialized)
     return RN_ERROR_BAD_STATE;
@@ -458,9 +458,9 @@ void rn_renderer_fini(struct rn_state_t *state) {
   if (!state)
     return;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
-  struct rn_allocator_t    *allocator = &state->allocator;
+  struct rn_allocator_t *allocator = &state->allocator;
 
   if (renderer->initialized || renderer->instances || renderer->batches)
     RN_TRACE(state->log, "tearing down 2D renderer and owned GPU resources");
@@ -526,7 +526,7 @@ rn_result_t rn_begin(struct rn_state_t *state) {
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
   if (!renderer->initialized || renderer->frame_active)
@@ -547,7 +547,7 @@ rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
   if (!renderer->initialized)
@@ -563,7 +563,7 @@ rn_result_t rn_clear_color_buffer(struct rn_state_t *state) {
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
   if (!renderer->initialized)
@@ -593,7 +593,7 @@ rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
                           renderer->atlas_texture);
 }
 
-rn_result_t rn_draw_texture(struct rn_state_t       *state,
+rn_result_t rn_draw_texture(struct rn_state_t *state,
                             const struct rn_image_t *image,
                             struct rn_rect_t rect, struct rn_color_t tint) {
 
@@ -639,7 +639,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
   if (!renderer->initialized || !renderer->frame_active)
@@ -739,8 +739,8 @@ rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
   return RN_OK;
 }
 
-rn_result_t rn_image_update(struct rn_state_t         *state,
-                            const struct rn_image_t   *image,
+rn_result_t rn_image_update(struct rn_state_t *state,
+                            const struct rn_image_t *image,
                             const struct rn_box_u32_t *region, const void *rgba,
                             size_t byte_count) {
   if (!state || !image || !rgba || !image->width || !image->height)
@@ -790,7 +790,7 @@ rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
 
-  struct rn_renderer_t     *renderer = &state->renderer;
+  struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
   if (!renderer->initialized || !renderer->atlas_layers ||
@@ -907,7 +907,7 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
   image->texture = RN_INVALID_HANDLE;
 }
 
-void rn_canvas_set_bounds(struct rn_state_t         *state,
+void rn_canvas_set_bounds(struct rn_state_t *state,
                           const struct rn_box_u32_t *canvas) {
 
   if (!state || !canvas)
