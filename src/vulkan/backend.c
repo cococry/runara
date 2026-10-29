@@ -79,6 +79,7 @@ struct rn_vk_texture {
   bool                       dmabuf, acquired;
   VkDeviceMemory             dmabuf_memory;
   int                        dmabuf_fd;
+  int                        acquire_fd;
   uint64_t                   dmabuf_device, dmabuf_inode;
   struct rn_vk_dmabuf_desc_t dmabuf_desc;
 };
@@ -150,6 +151,9 @@ struct rn_vk_frame {
   VkSemaphore     image_available;
   VkFence         fence;
   uint64_t        submission;
+  VkSemaphore    *acquire_semaphores, *wait_semaphores;
+  VkPipelineStageFlags *wait_stages;
+  uint32_t        acquire_capacity, wait_count;
 };
 
 struct rn_vk_context {
@@ -198,6 +202,7 @@ struct rn_vk_context {
   PFN_vkGetPhysicalDeviceFormatProperties2KHR format_properties;
   PFN_vkGetPhysicalDeviceImageFormatProperties2KHR image_properties;
   PFN_vkGetMemoryFdPropertiesKHR                   fd_properties;
+  PFN_vkImportSemaphoreFdKHR                       import_semaphore_fd;
   VkPhysicalDeviceProperties                       properties;
 
   struct rn_vk_buffer   *buffers;
@@ -228,6 +233,8 @@ static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
                                            struct rn_vk_texture *texture);
 static void        _dmabuf_release_commands(struct rn_vk_context *ctx,
                                             VkCommandBuffer       command);
+static rn_result_t _dmabuf_acquire_commands(struct rn_vk_context *ctx,
+                                            struct rn_vk_frame *frame);
 static void        _dmabuf_forget(struct rn_vk_context *ctx,
                                   rn_texture_handle_t   handle);
 static void        _dmabuf_close(struct rn_vk_texture *texture);
@@ -256,6 +263,7 @@ static struct rn_vk_texture  *_texture(struct rn_vk_context *ctx,
                                        rn_texture_handle_t   handle);
 static struct rn_vk_pipeline *_pipeline(struct rn_vk_context *ctx,
                                         rn_pipeline_handle_t  handle);
+
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height);
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color);
@@ -428,6 +436,8 @@ static rn_result_t _create_instance(struct rn_vk_context *ctx) {
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
     extensions[extension_count++] =
         VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME;
+    extensions[extension_count++] =
+        VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME;
   }
 #endif
 
@@ -684,6 +694,8 @@ static rn_result_t _create_device(struct rn_vk_context *ctx) {
       VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
       VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
       VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+      VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+      VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
   };
   const uint32_t dmabuf_extension_count =
       sizeof(dmabuf_extensions) / sizeof(dmabuf_extensions[0]);
@@ -1160,6 +1172,13 @@ static void _destroy_frame_commands(struct rn_vk_context *ctx) {
   for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
     struct rn_vk_frame *frame = &ctx->frames[i];
 
+    for (uint32_t j = 0; j < frame->acquire_capacity; ++j)
+      if (frame->acquire_semaphores[j])
+        vkDestroySemaphore(ctx->device, frame->acquire_semaphores[j], NULL);
+    ctx->alloc->free(frame->acquire_semaphores, ctx->alloc->ctx);
+    ctx->alloc->free(frame->wait_semaphores, ctx->alloc->ctx);
+    ctx->alloc->free(frame->wait_stages, ctx->alloc->ctx);
+
     if (frame->fence)
       vkDestroyFence(ctx->device, frame->fence, NULL);
 
@@ -1231,6 +1250,51 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
 
   return RN_OK;
 }
+
+static rn_result_t _prepare_frame_waits(struct rn_vk_context *ctx,
+                                        struct rn_vk_frame *frame) {
+  if (ctx->acquired_count > UINT32_MAX - 1)
+    return RN_ERROR_OUT_OF_MEMORY;
+  if (!frame->wait_semaphores || ctx->acquired_count > frame->acquire_capacity) {
+    uint32_t capacity = frame->acquire_capacity ? frame->acquire_capacity : 8;
+    while (capacity < ctx->acquired_count) {
+      if (capacity > (UINT32_MAX - 1) / 2)
+        return RN_ERROR_OUT_OF_MEMORY;
+      capacity *= 2;
+    }
+    VkSemaphore *acquire = ctx->alloc->alloc(
+        (size_t)capacity * sizeof(*acquire), ctx->alloc->ctx);
+    VkSemaphore *wait = ctx->alloc->alloc(
+        ((size_t)capacity + 1) * sizeof(*wait), ctx->alloc->ctx);
+    VkPipelineStageFlags *stages = ctx->alloc->alloc(
+        ((size_t)capacity + 1) * sizeof(*stages), ctx->alloc->ctx);
+    if (!acquire || !wait || !stages) {
+      ctx->alloc->free(acquire, ctx->alloc->ctx);
+      ctx->alloc->free(wait, ctx->alloc->ctx);
+      ctx->alloc->free(stages, ctx->alloc->ctx);
+      return RN_ERROR_OUT_OF_MEMORY;
+    }
+    memset(acquire, 0, (size_t)capacity * sizeof(*acquire));
+    if (frame->acquire_capacity)
+      memcpy(acquire, frame->acquire_semaphores,
+             (size_t)frame->acquire_capacity * sizeof(*acquire));
+    ctx->alloc->free(frame->acquire_semaphores, ctx->alloc->ctx);
+    ctx->alloc->free(frame->wait_semaphores, ctx->alloc->ctx);
+    ctx->alloc->free(frame->wait_stages, ctx->alloc->ctx);
+    frame->acquire_semaphores = acquire;
+    frame->wait_semaphores = wait;
+    frame->wait_stages = stages;
+    frame->acquire_capacity = capacity;
+  }
+  frame->wait_count = 0;
+  if (ctx->mode == RN_VK_TARGET_MANAGED) {
+    frame->wait_semaphores[frame->wait_count] = frame->image_available;
+    frame->wait_stages[frame->wait_count++] =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  }
+  return RN_OK;
+}
+
 
 static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                                 uint32_t width, uint32_t height) {
@@ -1400,6 +1464,13 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
                          NULL, 0, NULL, 1, &acquire);
   }
 
+  result = _prepare_frame_waits(ctx, frame);
+  if (result != RN_OK)
+    return result;
+  result = _dmabuf_acquire_commands(ctx, frame);
+  if (result != RN_OK)
+    return result;
+
   /* render pass is began for both managed and external mode */
 
   const VkRenderPassBeginInfo pass = {
@@ -1559,8 +1630,6 @@ static rn_result_t _end_frame(void *backend_ctx) {
   if (result != RN_OK)
     return result;
 
-  const VkPipelineStageFlags wait_stage =
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSemaphore render_done = VK_NULL_HANDLE;
 
   if (ctx->mode == RN_VK_TARGET_MANAGED)
@@ -1568,11 +1637,9 @@ static rn_result_t _end_frame(void *backend_ctx) {
 
   const VkSubmitInfo submit = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-      .waitSemaphoreCount = ctx->mode == RN_VK_TARGET_MANAGED ? 1u : 0u,
-      .pWaitSemaphores =
-          ctx->mode == RN_VK_TARGET_MANAGED ? &frame->image_available : NULL,
-      .pWaitDstStageMask =
-          ctx->mode == RN_VK_TARGET_MANAGED ? &wait_stage : NULL,
+      .waitSemaphoreCount = frame->wait_count,
+      .pWaitSemaphores = frame->wait_semaphores,
+      .pWaitDstStageMask = frame->wait_stages,
       .commandBufferCount = 1,
       .pCommandBuffers = &frame->command,
       .signalSemaphoreCount = ctx->mode == RN_VK_TARGET_MANAGED ? 1u : 0u,
@@ -1590,7 +1657,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
   if (target)
     target->render_fence = frame->fence;
 
-  ctx->acquired_count = 0;
+  _dmabuf_release_pending(ctx);
   frame->submission = ++ctx->submitted;
   ctx->frame_submitted = true;
   ctx->frame_index = (ctx->frame_index + 1) % RN_VK_FRAMES_IN_FLIGHT;
@@ -3474,7 +3541,7 @@ rn_result_t rn_image_from_vk_image(struct rn_state_t *state, VkImage image,
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/dma-buf.h>
-#include <poll.h>
+#include <linux/sync_file.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -3541,9 +3608,29 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
           ctx->instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
   ctx->fd_properties = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(
       ctx->device, "vkGetMemoryFdPropertiesKHR");
+  ctx->import_semaphore_fd = (PFN_vkImportSemaphoreFdKHR)vkGetDeviceProcAddr(
+      ctx->device, "vkImportSemaphoreFdKHR");
+  PFN_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR semaphore_properties =
+      (PFN_vkGetPhysicalDeviceExternalSemaphorePropertiesKHR)vkGetInstanceProcAddr(
+          ctx->instance, "vkGetPhysicalDeviceExternalSemaphorePropertiesKHR");
 
-  if (!ctx->format_properties || !ctx->image_properties || !ctx->fd_properties)
+  if (!ctx->format_properties || !ctx->image_properties || !ctx->fd_properties ||
+      !ctx->import_semaphore_fd || !semaphore_properties)
     return RN_ERROR_BACKEND;
+
+  const VkPhysicalDeviceExternalSemaphoreInfo semaphore_info = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+      .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+  };
+  VkExternalSemaphoreProperties semaphore_props = {
+      .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
+  };
+  semaphore_properties(ctx->physical_device, &semaphore_info, &semaphore_props);
+  if (!(semaphore_props.externalSemaphoreFeatures &
+        VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT)) {
+    ctx->dmabuf_enabled = false;
+    return RN_OK;
+  }
 
   for (size_t f = 0; f < sizeof(_dmabuf_rgb) / sizeof(_dmabuf_rgb[0]); ++f) {
     VkDrmFormatModifierPropertiesListEXT list = {
@@ -3642,43 +3729,30 @@ static void _dmabuf_release_commands(struct rn_vk_context *ctx,
 
     if (texture && texture->acquired) {
       _dmabuf_barrier(ctx, texture, command, false);
-      texture->acquired = false;
     }
   }
 }
 
 static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx) {
-  if (!ctx->acquired_count)
-    return RN_OK;
-
-  rn_result_t result = _begin_upload(ctx);
-
-  if (result != RN_OK)
-    return result;
-
-  _dmabuf_release_commands(ctx, ctx->upload_command);
-  result = _end_upload(ctx);
-
-  if (result == RN_OK)
-    ctx->acquired_count = 0;
-
-  return result;
+  /* Acquires are queued on the CPU until the render submission. Cancel unused
+   * acquires, or forget those whose release barriers were just submitted. */
+  for (size_t i = 0; i < ctx->acquired_count; ++i) {
+    struct rn_vk_texture *texture = _texture(ctx, ctx->acquired_images[i]);
+    if (texture)
+      _dmabuf_release_texture(ctx, texture);
+  }
+  ctx->acquired_count = 0;
+  return RN_OK;
 }
 
 static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
                                            struct rn_vk_texture *texture) {
-  rn_result_t result = _begin_upload(ctx);
-
-  if (result != RN_OK)
-    return result;
-
-  _dmabuf_barrier(ctx, texture, ctx->upload_command, false);
-  result = _end_upload(ctx);
-
-  if (result == RN_OK)
-    texture->acquired = false;
-
-  return result;
+  (void)ctx;
+  if (texture->acquire_fd >= 0)
+    close(texture->acquire_fd);
+  texture->acquire_fd = -1;
+  texture->acquired = false;
+  return RN_OK;
 }
 
 static void _dmabuf_forget(struct rn_vk_context *ctx,
@@ -3695,78 +3769,94 @@ static void _dmabuf_close(struct rn_vk_texture *texture) {
   close(texture->dmabuf_fd);
 }
 
-static rn_result_t _dmabuf_wait(struct rn_vk_context *ctx, int fd) {
-  if (fd < 0)
-    return RN_ERROR_INVALID_ARGUMENT;
-
-  struct pollfd wait = {.fd = fd, .events = POLLIN};
-  int           result;
-
-  do {
-    result = poll(&wait, 1, -1);
-  } while (result < 0 && errno == EINTR);
-
-  if (result > 0 && (wait.revents & POLLIN))
-    return RN_OK;
-
-  _VK_ERROR(ctx->log, "failed to wait for dma-buf acquire fence");
-  return RN_ERROR_BACKEND;
+static rn_result_t _dmabuf_acquire_commands(struct rn_vk_context *ctx,
+                                            struct rn_vk_frame *frame) {
+  for (size_t i = 0; i < ctx->acquired_count; ++i) {
+    struct rn_vk_texture *texture = _texture(ctx, ctx->acquired_images[i]);
+    if (!texture || !texture->acquired)
+      return RN_ERROR_BAD_STATE;
+    /* Frame-slot reuse already waited for all earlier uses of these semaphores. */
+    if (!frame->acquire_semaphores[i]) {
+      const VkSemaphoreCreateInfo info = {
+          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+      };
+      VkSemaphore semaphore = VK_NULL_HANDLE;
+      rn_result_t result = _result(ctx,
+          vkCreateSemaphore(ctx->device, &info, NULL, &semaphore),
+          "vkCreateSemaphore(dmabuf acquire)");
+      if (result != RN_OK)
+        return result;
+      frame->acquire_semaphores[i] = semaphore;
+    }
+    /* Keep the queued FD for safe retry if recording fails before submission. */
+    int fd = fcntl(texture->acquire_fd, F_DUPFD_CLOEXEC, 0);
+    if (fd < 0)
+      return RN_ERROR_BACKEND;
+    const VkImportSemaphoreFdInfoKHR info = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+        .semaphore = frame->acquire_semaphores[i],
+        .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+        .fd = fd,
+    };
+    VkResult status = ctx->import_semaphore_fd(ctx->device, &info);
+    if (status != VK_SUCCESS) {
+      close(fd);
+      return _result(ctx, status, "vkImportSemaphoreFdKHR(dmabuf)");
+    }
+    frame->wait_semaphores[frame->wait_count] = frame->acquire_semaphores[i];
+    /* Legacy queue-family transfers must wait before the ownership acquire,
+     * not merely before the fragment shader reads the image. */
+    frame->wait_stages[frame->wait_count++] = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    _dmabuf_barrier(ctx, texture, frame->command, true);
+  }
+  return RN_OK;
 }
 
 static rn_result_t _dmabuf_acquire(struct rn_vk_context *ctx,
                                    rn_texture_handle_t handle, int fence_fd) {
   struct rn_vk_texture *texture = _texture(ctx, handle);
-  rn_result_t           result;
 
-  if (fence_fd >= 0) {
-    /* wait on the explict fence */
-    result = _dmabuf_wait(ctx, fence_fd);
-  } else {
-
-    /* without an explicit fence, wait for the buffer's pending writers through
-     * its implicit synchronization before reading it */
-    struct dma_buf_export_sync_file sync = {.flags = DMA_BUF_SYNC_READ,
-                                            .fd = -1};
-
-    if (ioctl(texture->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync) < 0) {
-      _VK_ERROR(ctx->log, "cannot export dma-buf acquire fence: %s",
-                strerror(errno));
-      return RN_ERROR_BACKEND;
-    }
-
-    result = _dmabuf_wait(ctx, sync.fd);
-    close(sync.fd);
-  }
-
-  if (result != RN_OK || texture->acquired)
-    return result;
-
-  if (ctx->acquired_count == ctx->acquired_capacity) {
+  if (!texture->acquired && ctx->acquired_count == ctx->acquired_capacity) {
     size_t capacity = ctx->acquired_capacity ? ctx->acquired_capacity * 2 : 16;
     rn_texture_handle_t *handles = ctx->alloc->realloc(
         ctx->acquired_images, capacity * sizeof(*handles), ctx->alloc->ctx);
-
     if (!handles)
       return RN_ERROR_OUT_OF_MEMORY;
-
     ctx->acquired_images = handles;
     ctx->acquired_capacity = capacity;
   }
 
-  result = _begin_upload(ctx);
+  int fd;
+  if (fence_fd >= 0) {
+    fd = fcntl(fence_fd, F_DUPFD_CLOEXEC, 0);
+  } else {
+    struct dma_buf_export_sync_file sync = {.flags = DMA_BUF_SYNC_READ, .fd = -1};
+    if (ioctl(texture->dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &sync) < 0) {
+      _VK_ERROR(ctx->log, "cannot export dma-buf acquire fence: %s", strerror(errno));
+      return RN_ERROR_BACKEND;
+    }
+    fd = sync.fd;
+  }
+  if (fd < 0)
+    return RN_ERROR_BACKEND;
 
-  if (result != RN_OK)
-    return result;
-
-  _dmabuf_barrier(ctx, texture, ctx->upload_command, true);
-  result = _end_upload(ctx);
-
-  if (result == RN_OK) {
-    texture->acquired = true;
-    ctx->acquired_images[ctx->acquired_count++] = handle;
+  if (texture->acquired) {
+    /* Multiple uses of one image may carry different producer dependencies. */
+    struct sync_merge_data merge = {.name = "runara-acquire", .fd2 = fd};
+    int status = ioctl(texture->acquire_fd, SYNC_IOC_MERGE, &merge);
+    close(fd);
+    if (status < 0)
+      return RN_ERROR_BACKEND;
+    close(texture->acquire_fd);
+    texture->acquire_fd = merge.fence;
+    return RN_OK;
   }
 
-  return result;
+  texture->acquire_fd = fd;
+  texture->acquired = true;
+  ctx->acquired_images[ctx->acquired_count++] = handle;
+  return RN_OK;
 }
 
 /* creates a new rn_image_t from a dmabuf description */
@@ -3913,6 +4003,7 @@ static rn_result_t _dmabuf_create(struct rn_vk_context             *ctx,
   texture->dmabuf = true;
   texture->dmabuf_memory = memory;
   texture->dmabuf_fd = fd;
+  texture->acquire_fd = -1;
   texture->dmabuf_device = stat->st_dev;
   texture->dmabuf_inode = stat->st_ino;
   texture->dmabuf_desc = *desc;
@@ -3926,6 +4017,20 @@ fail:
     vkFreeMemory(ctx->device, memory, NULL);
 
   return result;
+}
+
+rn_result_t rn_vk_image_acquire_dmabuf(struct rn_state_t *state,
+                                       const struct rn_image_t *image,
+                                       int acquire_fence_fd) {
+  struct rn_vk_context *ctx = _state_context(state);
+  if (!ctx || !image || acquire_fence_fd < -1)
+    return RN_ERROR_INVALID_ARGUMENT;
+  if (ctx->frame_active || ctx->fatal)
+    return RN_ERROR_BAD_STATE;
+  struct rn_vk_texture *texture = _texture(ctx, image->texture);
+  if (!texture || !texture->dmabuf || image->storage != RN_IMAGE_DEDICATED)
+    return RN_ERROR_INVALID_ARGUMENT;
+  return _dmabuf_acquire(ctx, image->texture, acquire_fence_fd);
 }
 
 rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
@@ -4017,6 +4122,15 @@ rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
 }
 
 #else
+rn_result_t rn_vk_image_acquire_dmabuf(struct rn_state_t *state,
+                                       const struct rn_image_t *image,
+                                       int acquire_fence_fd) {
+  (void)state;
+  (void)image;
+  (void)acquire_fence_fd;
+  return RN_ERROR_BACKEND;
+}
+
 static rn_result_t _dmabuf_release_texture(struct rn_vk_context *ctx,
                                            struct rn_vk_texture *texture) {
   (void)ctx;
@@ -4030,6 +4144,12 @@ static rn_result_t _dmabuf_init(struct rn_vk_context *ctx) {
 }
 static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx) {
   (void)ctx;
+  return RN_OK;
+}
+static rn_result_t _dmabuf_acquire_commands(struct rn_vk_context *ctx,
+                                            struct rn_vk_frame *frame) {
+  (void)ctx;
+  (void)frame;
   return RN_OK;
 }
 static void _dmabuf_release_commands(struct rn_vk_context *ctx,

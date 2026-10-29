@@ -194,9 +194,16 @@ rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
                                  const struct rn_vk_dmabuf_format_t **formats,
                                  size_t                              *count);
 
-/* Import a DMABUF image before rn_begin, borrowing all input fds.
- * Initialize image to zero for a new import, or pass an existing imported image
- * to acquire it for another frame without reallocating its gpu storage. */
+/* Import a DMABUF image (call this only before rn_begin), borrowing all input
+ * fds. Initialize image to zero for a new import, or pass an existing imported
+ * image to acquire it for another frame without reallocating its gpu storage.
+ */
 rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
                                     const struct rn_vk_dmabuf_desc_t *desc,
                                     struct rn_image_t                *image);
+
+/* Reacquire a previously imported image without revalidating its descriptor.
+ * This is the fastest way to update a DMABUF that changed only its data. */
+rn_result_t rn_vk_image_acquire_dmabuf(struct rn_state_t *state,
+                                       const struct rn_image_t *image,
+                                       int acquire_fence_fd);
