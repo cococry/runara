@@ -65,13 +65,7 @@ struct rn_vk_init_options_t {
    */
   VkFormat external_format;
 
-  /* Enable optional Linux DMA-BUF imports. The driver determines available
-   * format/modifier pairs. YUV descriptor costs may reduce batch capacity.
-   * Custom Vulkan fragment shaders should size their texture arrays with the
-   * provided RN_TEXTURE_SLOTS macro (4, 8 or 16) and use constant indices.
-   * Packed YUV uses the built-in fragment shader's conversion logic; custom
-   * shaders sampling those formats must implement the same conversion.
-   */
+  /* Enable optional Linux DMA-BUF imports if supported by device */ 
   bool enable_dmabuf_import;
 };
 
@@ -212,10 +206,7 @@ struct rn_vk_dmabuf_desc_t {
 };
 
 /* Return a borrowed DMABUF format table, valid until rn_state_fini.
- * An empty table means that DMA-BUF import is unavailable. This is the
- * Vulkan driver's supported subset, which may differ from EGL's format table.
- * Modifiers (including vendor tiling/compression) are enumerated by the driver.
- */
+ * An empty table means that DMA-BUF import is unavailable. */
 rn_result_t rn_vk_dmabuf_formats(struct rn_state_t                   *state,
                                  const struct rn_vk_dmabuf_format_t **formats,
                                  size_t                              *count);
