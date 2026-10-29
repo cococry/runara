@@ -40,7 +40,6 @@
 
 #define RN_SUBSYS_NAME             "VULKAN"
 #define RN_VK_MAX_BINDINGS         8u
-#define RN_VK_FRAMES_IN_FLIGHT     3u
 #define RN_VK_MAX_TEXTURES         16u
 #define RN_VK_DESCRIPTOR_PAGE_SIZE 128u
 
@@ -150,6 +149,7 @@ struct rn_vk_frame {
   VkCommandBuffer command;
   VkSemaphore     image_available;
   VkFence         fence;
+  uint64_t        submission;
 };
 
 struct rn_vk_context {
@@ -174,6 +174,7 @@ struct rn_vk_context {
 
   struct rn_vk_frame frames[RN_VK_FRAMES_IN_FLIGHT];
   uint32_t           frame_index;
+  uint64_t           submitted, completed;
 
   VkPhysicalDevice                            physical_device;
   VkDevice                                    device;
@@ -1249,6 +1250,9 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
   if (result != RN_OK)
     return result;
 
+  if (frame->submission > ctx->completed)
+    ctx->completed = frame->submission;
+
   /* reuse descriptor storage only after the frame slot's fence has signaled */
   for (size_t i = 0; i < ctx->pipeline_count; ++i) {
     if (ctx->pipelines[i].alive) {
@@ -1587,6 +1591,7 @@ static rn_result_t _end_frame(void *backend_ctx) {
     target->render_fence = frame->fence;
 
   ctx->acquired_count = 0;
+  frame->submission = ++ctx->submitted;
   ctx->frame_submitted = true;
   ctx->frame_index = (ctx->frame_index + 1) % RN_VK_FRAMES_IN_FLIGHT;
 
@@ -3319,7 +3324,38 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
                               UINT64_MAX),
               "vkWaitForFences(render complete)");
 
-  return result == RN_OK ? _dmabuf_release_pending(ctx) : result;
+  if (result != RN_OK)
+    return result;
+
+  ctx->completed = ctx->submitted;
+  return _dmabuf_release_pending(ctx);
+}
+
+rn_result_t rn_vk_submission_status(struct rn_state_t *state,
+                                     uint64_t *o_last_submitted, uint64_t *o_last_completed) {
+  struct rn_vk_context *ctx = _state_context(state);
+
+  if (!ctx || ctx->frame_active || !o_last_submitted || !o_last_completed)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  for (uint32_t i = 0; i < RN_VK_FRAMES_IN_FLIGHT; ++i) {
+    struct rn_vk_frame *frame = &ctx->frames[i];
+    /* skip already completed submissions */
+    if (frame->submission <= ctx->completed)
+      continue;
+
+    VkResult status = vkGetFenceStatus(ctx->device, frame->fence);
+    if (status == VK_SUCCESS)
+      ctx->completed = frame->submission;
+    else if (status != VK_NOT_READY)
+      /* the frame must be ready at this point */
+      return _result(ctx, status, "vkGetFenceStatus(frame)");
+  }
+
+  *o_last_submitted = ctx->submitted;
+  *o_last_completed = ctx->completed;
+
+  return RN_OK;
 }
 
 rn_result_t rn_vk_target_unregister(struct rn_state_t    *state,

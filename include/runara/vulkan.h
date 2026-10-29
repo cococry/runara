@@ -16,6 +16,7 @@ enum rn_vk_target_mode_t {
 typedef uint32_t rn_vk_target_handle_t;
 
 #define RN_VK_INVALID_TARGET UINT32_MAX
+#define RN_VK_FRAMES_IN_FLIGHT 3u
 
 /* Window callbacks for creating and sizing a native VkSurfaceKHR. */
 struct rn_vk_surface_impl_t {
@@ -146,6 +147,12 @@ rn_result_t rn_vk_target_unregister(struct rn_state_t *state,
 /* Wait for the most recent Runara rendering submission to finish.
  * This is a correct but blocking synchronization path. */
 rn_result_t rn_vk_wait_for_render(struct rn_state_t *state);
+
+/* Nonblocking rendering completion query, called between frames. Submission
+ * IDs start at 1; 0 means no submissions. Every ID <= last_completed has finished
+ * GPU execution */
+rn_result_t rn_vk_submission_status(struct rn_state_t *state,
+                                     uint64_t *o_last_submitted, uint64_t *o_last_completed);
 
 /* Borrow a previously imported sampled VkImage.
  * Runara creates/destroys its view and sampler, but not the VkImage/memory.
