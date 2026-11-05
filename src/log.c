@@ -162,9 +162,6 @@ void rn_log_emit(const struct rn_log_t *log, enum rn_log_level_t level,
   }
 
   va_end(args);
-
-  if (fatal)
-    exit(EXIT_FAILURE);
 }
 
 char *rn_log_get_filepath(void) {
