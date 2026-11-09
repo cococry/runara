@@ -90,6 +90,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
                                     const struct rn_quad_instance_t *instance,
                                     rn_pipeline_handle_t pipeline,
                                     rn_texture_handle_t texture) {
+  RN_PROFILE_SCOPE();
   struct rn_renderer_t *renderer = &state->renderer;
 
   if (!renderer->frame_active)
@@ -179,6 +180,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
 
 static rn_result_t _configure_draw(struct rn_state_t *state,
                                    rn_pipeline_handle_t pipeline) {
+  RN_PROFILE_SCOPE();
   struct rn_backend_impl_t *backend = &state->backend;
   struct rn_renderer_t *renderer = &state->renderer;
 
@@ -200,6 +202,7 @@ static rn_result_t _configure_draw(struct rn_state_t *state,
 }
 
 static bool _valid_pixels(uint32_t width, uint32_t height, size_t byte_count) {
+  RN_PROFILE_SCOPE();
 
   if (!width || !height || (size_t)width > SIZE_MAX / 4u / height)
     return false;
@@ -208,6 +211,7 @@ static bool _valid_pixels(uint32_t width, uint32_t height, size_t byte_count) {
 }
 
 rn_result_t rn_renderer_init(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -472,6 +476,7 @@ failed:
 }
 
 void rn_renderer_fini(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return;
@@ -546,6 +551,7 @@ void rn_renderer_fini(struct rn_state_t *state) {
 }
 
 rn_result_t rn_begin(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -567,6 +573,7 @@ rn_result_t rn_begin(struct rn_state_t *state) {
 }
 
 rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -583,6 +590,7 @@ rn_result_t rn_clear_color(struct rn_state_t *state, struct rn_color_t color) {
 }
 
 rn_result_t rn_clear_color_buffer(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -600,6 +608,7 @@ rn_result_t rn_clear_color_buffer(struct rn_state_t *state) {
 
 rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
                          struct rn_color_t color) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -620,6 +629,7 @@ rn_result_t rn_draw_rect(struct rn_state_t *state, struct rn_rect_t rect,
 rn_result_t rn_draw_texture(struct rn_state_t *state,
                             const struct rn_image_t *image,
                             struct rn_rect_t rect, struct rn_color_t tint) {
+  RN_PROFILE_SCOPE();
 
   if (!state || !image || image->texture == RN_INVALID_HANDLE)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -736,6 +746,7 @@ finish: {
 rn_result_t rn_image_dedicated(struct rn_state_t *state, uint32_t width,
                                uint32_t height, const void *rgba,
                                size_t byte_count, struct rn_image_t *image) {
+  RN_PROFILE_SCOPE();
 
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
@@ -775,6 +786,7 @@ rn_result_t rn_image_update(struct rn_state_t *state,
                             const struct rn_image_t *image,
                             const struct rn_box_u32_t *region, const void *rgba,
                             size_t byte_count) {
+  RN_PROFILE_SCOPE();
   if (!state || !image || !rgba || !image->width || !image->height)
     return RN_ERROR_INVALID_ARGUMENT;
 
@@ -818,6 +830,7 @@ rn_result_t rn_image_update(struct rn_state_t *state,
 rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
                            uint32_t height, const void *rgba, size_t byte_count,
                            struct rn_image_t *image) {
+  RN_PROFILE_SCOPE();
 
   if (!state || !image || !rgba || !_valid_pixels(width, height, byte_count))
     return RN_ERROR_INVALID_ARGUMENT;
@@ -924,6 +937,7 @@ rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
 }
 
 void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
+  RN_PROFILE_SCOPE();
 
   if (!state || !image)
     return;
@@ -941,6 +955,7 @@ void rn_texture_release(struct rn_state_t *state, struct rn_image_t *image) {
 
 void rn_canvas_set_bounds(struct rn_state_t *state,
                           const struct rn_box_u32_t *canvas) {
+  RN_PROFILE_SCOPE();
 
   if (!state || !canvas)
     return;

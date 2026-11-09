@@ -4,3 +4,7 @@
 #ifndef RN_PROFILE_SCOPE
 #define RN_PROFILE_SCOPE()
 #endif
+
+#ifndef RN_PROFILE_SCOPE_NAMED
+#define RN_PROFILE_SCOPE_NAMED(name)
+#endif

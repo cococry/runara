@@ -20,6 +20,7 @@
  * SOFTWARE.
  */
 
+#include "src/profiling.h"
 #include "../include/runara/runara.h"
 #include "src/backend.h"
 #include "src/internal.h"
@@ -37,22 +38,26 @@ static void _log_init(struct rn_state_t *state,
 static const char *_backend_type_to_str(enum rn_backend_type_t type);
 
 static void *_default_alloc(size_t size, void *ctx) {
+  RN_PROFILE_SCOPE();
   (void)ctx;
   return malloc(size);
 }
 
 static void *_default_realloc(void *ptr, size_t size, void *ctx) {
+  RN_PROFILE_SCOPE();
   (void)ctx;
   return realloc(ptr, size);
 }
 
 static void _default_free(void *ptr, void *ctx) {
+  RN_PROFILE_SCOPE();
   (void)ctx;
   free(ptr);
 }
 
 static void _log_init(struct rn_state_t *state,
                       const struct rn_log_options_t *log_opts) {
+  RN_PROFILE_SCOPE();
   assert(state && log_opts);
 
   state->log =
@@ -88,6 +93,7 @@ static void _log_init(struct rn_state_t *state,
 }
 
 static const char *_backend_type_to_str(enum rn_backend_type_t type) {
+  RN_PROFILE_SCOPE();
 
   switch (type) {
   case RN_RENDER_BACKEND_OPENGL:
@@ -100,6 +106,7 @@ static const char *_backend_type_to_str(enum rn_backend_type_t type) {
 }
 
 const char *rn_result_to_str(rn_result_t result) {
+  RN_PROFILE_SCOPE();
 
   switch (result) {
   case RN_OK:
@@ -122,6 +129,7 @@ const char *rn_result_to_str(rn_result_t result) {
 }
 
 struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
+  RN_PROFILE_SCOPE();
 
   if (!options) {
     RN_ERROR_HEADLESS("NULL rn_init_options_t supplied, cannot initialize");
@@ -195,6 +203,7 @@ struct rn_state_t *rn_state_init(const struct rn_init_options_t *options) {
 }
 
 void rn_state_fini(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state) {
     RN_ERROR_HEADLESS("Trying to destroy NULL Runara state");

@@ -20,6 +20,7 @@
  * SOFTWARE.
  */
 
+#include "src/profiling.h"
 #include "backend.h"
 #include "src/log.h"
 
@@ -30,6 +31,7 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
                           const struct rn_allocator_t *alloc,
                           const struct rn_log_t *log, const void *backend_info,
                           const char *frag_dedicated, const char *frag_atlas) {
+  RN_PROFILE_SCOPE();
 
   if (!impl || !alloc)
     return false;
@@ -62,6 +64,7 @@ bool rn_backend_implement(struct rn_backend_impl_t *impl,
 void rn_backend_fini(struct rn_backend_impl_t *impl,
                      enum rn_backend_type_t type,
                      const struct rn_allocator_t *alloc) {
+  RN_PROFILE_SCOPE();
 
   if (!impl || !alloc)
     return;

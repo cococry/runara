@@ -40,6 +40,13 @@ runara_deps = [
   dep_m,
 ]
 
+# Embedders may supply their CPU profiler without coupling Runara to Tracy.
+# An empty/missing adapter retains the dependency-free no-op hooks.
+runara_profiler = dependency('runara-profiling', required: false)
+if not runara_profiler.found()
+  runara_profiler = declare_dependency()
+endif
+
 runara_cflags = [
   '-march=native',
   '-ffast-math',
@@ -105,7 +112,7 @@ runara_lib = static_library(
   'runara',
   sources: runara_sources,
   include_directories: runara_includes,
-  dependencies: runara_deps,
+  dependencies: runara_deps + [runara_profiler],
   c_args: runara_cflags,
   install: true,
 )
@@ -113,7 +120,11 @@ runara_lib = static_library(
 runara_dep = declare_dependency(
   link_with: runara_lib,
   include_directories: runara_includes,
-  dependencies: runara_deps,
+  # Keep profiler compile definitions private; only its link requirements
+  # belong to consumers of this static library.
+  dependencies: runara_deps + [runara_profiler.partial_dependency(
+    link_args: true, links: true,
+  )],
 )
 
 install_subdir(
