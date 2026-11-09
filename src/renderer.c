@@ -1,3 +1,4 @@
+#include "src/profiling.h"
 /*
  * Copyright (c) 2026 Luca Machiedo
  *
@@ -115,7 +116,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
       } else {
         /* find if we already have the texture in the last batch */
 
-        for (uint32_t slot = 0; slot < last->texture_count; ++slot) {
+        for (uint32_t slot = 0; slot < last->texture_count; slot++) {
 
           if (last->textures[slot] == texture) {
             batch = last;
@@ -171,7 +172,7 @@ static rn_result_t _submit_instance(struct rn_state_t *state,
     queued.params[0] = (float)texture_slot;
 
   renderer->instances[renderer->instance_count++] = queued;
-  ++batch->instance_count;
+  batch->instance_count++;
 
   return RN_OK;
 }
@@ -237,6 +238,8 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   renderer->dedicated_pipeline = RN_INVALID_HANDLE;
   renderer->atlas_premultiplied_pipeline = RN_INVALID_HANDLE;
   renderer->dedicated_premultiplied_pipeline = RN_INVALID_HANDLE;
+  renderer->dedicated_single_pipeline = RN_INVALID_HANDLE;
+  renderer->dedicated_single_premultiplied_pipeline = RN_INVALID_HANDLE;
   renderer->atlas_texture = RN_INVALID_HANDLE;
 
   renderer->instances = allocator->alloc(
@@ -305,7 +308,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
 
   char sampler_names[RN_RENDERER_MAX_TEXTURE_SLOTS][24];
 
-  for (uint32_t slot = 0; slot < RN_RENDERER_MAX_TEXTURE_SLOTS; ++slot) {
+  for (uint32_t slot = 0; slot < RN_RENDERER_MAX_TEXTURE_SLOTS; slot++) {
     snprintf(sampler_names[slot], sizeof(sampler_names[slot]), "u_textures[%u]",
              (unsigned)slot);
 
@@ -381,6 +384,20 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
       (unsigned)renderer->atlas_pipeline,
       (unsigned)renderer->dedicated_pipeline);
 
+  if (backend->single_texture_batches) {
+    struct rn_pipeline_desc_t single = dedicated_desc;
+    single.shader = RN_PIPELINE_UI_QUAD_DEDICATED_SINGLE;
+    result = backend->create_pipeline(backend->ctx, &single,
+                                      &renderer->dedicated_single_pipeline);
+    if (result != RN_OK)
+      goto failed;
+    single.blend = RN_BLEND_PREMULTIPLIED_ALPHA;
+    result = backend->create_pipeline(
+        backend->ctx, &single, &renderer->dedicated_single_premultiplied_pipeline);
+    if (result != RN_OK)
+      goto failed;
+  }
+
   const struct rn_texture_array_desc_t texture_desc = {
       .width = RN_RENDERER_ATLAS_WIDTH,
       .height = RN_RENDERER_ATLAS_HEIGHT,
@@ -421,7 +438,7 @@ rn_result_t rn_renderer_init(struct rn_state_t *state) {
   memset(renderer->atlas_layers, 0,
          sizeof(*renderer->atlas_layers) * RN_RENDERER_ATLAS_LAYERS);
 
-  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer) {
+  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; layer++) {
 
     ls_atlas_init(
         &renderer->atlas_layers[layer],
@@ -470,6 +487,12 @@ void rn_renderer_fini(struct rn_state_t *state) {
     backend->destroy_texture(backend->ctx, renderer->atlas_texture);
 
   if (backend->destroy_pipeline) {
+    if (renderer->dedicated_single_pipeline != RN_INVALID_HANDLE)
+      backend->destroy_pipeline(backend->ctx, renderer->dedicated_single_pipeline);
+    if (renderer->dedicated_single_premultiplied_pipeline != RN_INVALID_HANDLE)
+      backend->destroy_pipeline(backend->ctx,
+                                renderer->dedicated_single_premultiplied_pipeline);
+
     if (renderer->atlas_premultiplied_pipeline != RN_INVALID_HANDLE)
       backend->destroy_pipeline(backend->ctx,
                                 renderer->atlas_premultiplied_pipeline);
@@ -508,7 +531,7 @@ void rn_renderer_fini(struct rn_state_t *state) {
 
   if (renderer->atlas_layers) {
 
-    for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer)
+    for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; layer++)
       free(renderer->atlas_layers[layer].skyline);
 
     allocator->free(renderer->atlas_layers, allocator->ctx);
@@ -636,6 +659,7 @@ rn_result_t rn_draw_texture(struct rn_state_t *state,
 }
 
 rn_result_t rn_end(struct rn_state_t *state) {
+  RN_PROFILE_SCOPE();
 
   if (!state)
     return RN_ERROR_INVALID_ARGUMENT;
@@ -659,19 +683,26 @@ rn_result_t rn_end(struct rn_state_t *state) {
     rn_pipeline_handle_t active_pipeline = RN_INVALID_HANDLE;
 
     for (uint32_t batch_index = 0; batch_index < renderer->batch_count;
-         ++batch_index) {
+         batch_index++) {
       const struct rn_draw_batch_t *batch = &renderer->batches[batch_index];
 
-      if (batch->pipeline != active_pipeline) {
-        result = _configure_draw(state, batch->pipeline);
+      rn_pipeline_handle_t pipeline = batch->pipeline;
+      if (backend->single_texture_batches && batch->texture_count == 1) {
+        if (pipeline == renderer->dedicated_pipeline)
+          pipeline = renderer->dedicated_single_pipeline;
+        else if (pipeline == renderer->dedicated_premultiplied_pipeline)
+          pipeline = renderer->dedicated_single_premultiplied_pipeline;
+      }
+      if (pipeline != active_pipeline) {
+        result = _configure_draw(state, pipeline);
 
         if (result != RN_OK)
           goto finish;
 
-        active_pipeline = batch->pipeline;
+        active_pipeline = pipeline;
       }
 
-      for (uint32_t slot = 0; slot < batch->texture_count; ++slot) {
+      for (uint32_t slot = 0; slot < batch->texture_count; slot++) {
         result =
             backend->set_texture(backend->ctx, slot, batch->textures[slot]);
 
@@ -814,7 +845,7 @@ rn_result_t rn_image_atlas(struct rn_state_t *state, uint32_t width,
       .y = (uint16_t)(height + RN_RENDERER_ATLAS_PADDING),
   };
 
-  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; ++layer) {
+  for (uint32_t layer = 0; layer < RN_RENDERER_ATLAS_LAYERS; layer++) {
     ls_atlas2d *atlas = &renderer->atlas_layers[layer];
 
     if (!atlas->_init)

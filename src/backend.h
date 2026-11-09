@@ -75,7 +75,8 @@ struct rn_texture_array_write_t {
 
 enum rn_shader_pipeline_t {
   RN_PIPELINE_UI_QUAD_ATLAS,
-  RN_PIPELINE_UI_QUAD_DEDICATED
+  RN_PIPELINE_UI_QUAD_DEDICATED,
+  RN_PIPELINE_UI_QUAD_DEDICATED_SINGLE
 };
 
 enum rn_vertex_format_t { RN_VERTEX_FLOAT32X2, RN_VERTEX_FLOAT32X4 };
@@ -141,6 +142,7 @@ struct rn_draw_indexed_instanced_t {
 struct rn_backend_impl_t {
   /* Zero uses the renderer default. */
   uint32_t texture_slots;
+  bool single_texture_batches;
   void *ctx;
   struct rn_box_u32_t initial_canvas;
 

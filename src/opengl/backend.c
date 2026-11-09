@@ -1,3 +1,4 @@
+#include "src/profiling.h"
 /*
  * Copyright (c) 2026 Luca Machiedo
  *
@@ -54,6 +55,10 @@ struct rn_gl_buffer {
   GLenum target;
   size_t size;
   bool alive;
+  /* Small instance streams often repeat while only texture contents change.
+   * we bound the comparison cost at 512 bytes. */
+  unsigned char last_write[512];
+  size_t last_offset, last_size;
 };
 
 struct rn_gl_texture {
@@ -66,6 +71,9 @@ struct rn_gl_texture {
 
 struct rn_gl_pipeline {
   GLuint gl_id;
+  GLint screen_location;
+  float screen_width, screen_height;
+  bool screen_valid;
   struct rn_vertex_buffer_layout_t layouts[RN_GL_MAX_BINDINGS];
   struct rn_vertex_attribute_t *attributes[RN_GL_MAX_BINDINGS];
   size_t layout_count;
@@ -81,6 +89,10 @@ struct rn_gl_binding {
 
 struct rn_gl_context {
   GLuint vertex_array;
+  bool state_preserved, vao_bound, viewport_valid;
+  bool cache_buffer_writes;
+  uint32_t viewport[4];
+  GLint max_texture_units;
   struct rn_gl_buffer *buffers;
   size_t buffer_count;
   struct rn_gl_texture *textures;
@@ -291,6 +303,14 @@ static const char *_frag_dedicated =
     "  out_color = texel * v_color;\n"
     "}\n";
 
+static const char *_frag_single_texture =
+    "#version 330 core\n"
+    "in vec2 v_uv;\n"
+    "in vec4 v_color;\n"
+    "uniform sampler2D u_textures[1];\n"
+    "out vec4 out_color;\n"
+    "void main() { out_color = texture(u_textures[0], v_uv) * v_color; }\n";
+
 static bool glad_loaded = false;
 
 static const char *_gl_error_name(GLenum error) {
@@ -313,6 +333,7 @@ static const char *_gl_error_name(GLenum error) {
 
 static rn_result_t _gl_check(const struct rn_log_t *log,
                              const char *operation) {
+  RN_PROFILE_SCOPE();
   rn_result_t result = RN_OK;
   GLenum error = GL_NO_ERROR;
 
@@ -409,9 +430,22 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
   if (!ctx || width > INT_MAX || height > INT_MAX)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  glViewport((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height);
-  glBindVertexArray(ctx->vertex_array);
-  return _gl_check(ctx->log, __func__);
+  bool changed = false;
+  if (!ctx->state_preserved || !ctx->viewport_valid ||
+      ctx->viewport[0] != x || ctx->viewport[1] != y ||
+      ctx->viewport[2] != width || ctx->viewport[3] != height) {
+    changed = true;
+    glViewport((GLint)x, (GLint)y, (GLsizei)width, (GLsizei)height);
+    ctx->viewport[0] = x; ctx->viewport[1] = y;
+    ctx->viewport[2] = width; ctx->viewport[3] = height;
+    ctx->viewport_valid = true;
+  }
+  if (!ctx->state_preserved || !ctx->vao_bound) {
+    changed = true;
+    glBindVertexArray(ctx->vertex_array);
+    ctx->vao_bound = true;
+  }
+  return changed ? _gl_check(ctx->log, __func__) : RN_OK;
 }
 
 static rn_result_t _clear_color(void *backend_ctx, rn_color_t color) {
@@ -489,7 +523,8 @@ static rn_result_t _create_buffer(void *backend_ctx,
   *out_handle = (rn_buffer_handle_t)ctx->buffer_count;
 
   ctx->buffers[ctx->buffer_count++] =
-      (struct rn_gl_buffer){gl_id, target, desc->size, true};
+      (struct rn_gl_buffer){.gl_id = gl_id, .target = target,
+                            .size = desc->size, .alive = true};
 
   _RN_GL_LOG_TRACE(ctx->log, "created buffer %u (GL=%u, size=%zu bytes)",
                    (unsigned int)*out_handle, (unsigned int)gl_id, desc->size);
@@ -515,7 +550,7 @@ static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle) {
   gpu_buffer->alive = false;
 
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
-       ++binding_index)
+       binding_index++)
 
     if (ctx->bindings[binding_index].handle == handle)
       ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
@@ -527,7 +562,7 @@ static void _destroy_buffer(void *backend_ctx, rn_buffer_handle_t handle) {
 static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
                                  uint32_t binding, size_t offset,
                                  const void *data, size_t size) {
-  (void)binding;
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || (!data && size))
@@ -540,9 +575,24 @@ static rn_result_t _write_buffer(void *backend_ctx, rn_buffer_handle_t handle,
       !_gl_size_fits(size))
     return RN_ERROR_INVALID_ARGUMENT;
 
+  bool cacheable = ctx->state_preserved && ctx->cache_buffer_writes &&
+                   binding == 1 && gpu_buffer->target == GL_ARRAY_BUFFER &&
+                   size > 0 && size <= sizeof(gpu_buffer->last_write);
+  if (cacheable && gpu_buffer->last_offset == offset &&
+      gpu_buffer->last_size == size &&
+      memcmp(gpu_buffer->last_write, data, size) == 0)
+    return RN_OK;
+
+  gpu_buffer->last_size = 0;
   glBindBuffer(gpu_buffer->target, gpu_buffer->gl_id);
   glBufferSubData(gpu_buffer->target, (GLintptr)offset, (GLsizeiptr)size, data);
-  return _gl_check(ctx->log, __func__);
+  rn_result_t result = _gl_check(ctx->log, __func__);
+  if (result == RN_OK && cacheable) {
+    memcpy(gpu_buffer->last_write, data, size);
+    gpu_buffer->last_offset = offset;
+    gpu_buffer->last_size = size;
+  }
+  return result;
 }
 
 static GLuint _compile_shader(struct rn_gl_context *ctx, GLenum shader_type,
@@ -588,8 +638,9 @@ _create_shader_program(struct rn_gl_context *ctx,
 
   GLuint fragment_shader = _compile_shader(
       ctx, GL_FRAGMENT_SHADER,
-      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ? ctx->frag_atlas
-                                                   : ctx->frag_dedicated);
+      shader_pipeline == RN_PIPELINE_UI_QUAD_ATLAS ? ctx->frag_atlas :
+      shader_pipeline == RN_PIPELINE_UI_QUAD_DEDICATED_SINGLE ?
+          _frag_single_texture : ctx->frag_dedicated);
 
   if (!fragment_shader) {
     glDeleteShader(vertex_shader);
@@ -642,12 +693,13 @@ static rn_result_t _create_pipeline(void *backend_ctx,
       (desc->vertex_binding_count && !desc->vertex_bindings) ||
       (desc->uniform_binding_count && !desc->uniform_bindings) ||
       (desc->shader != RN_PIPELINE_UI_QUAD_ATLAS &&
-       desc->shader != RN_PIPELINE_UI_QUAD_DEDICATED) ||
+       desc->shader != RN_PIPELINE_UI_QUAD_DEDICATED &&
+       desc->shader != RN_PIPELINE_UI_QUAD_DEDICATED_SINGLE) ||
       desc->blend > RN_BLEND_PREMULTIPLIED_ALPHA)
     return RN_ERROR_INVALID_ARGUMENT;
 
   for (size_t binding_index = 0; binding_index < desc->vertex_binding_count;
-       ++binding_index) {
+       binding_index++) {
     const struct rn_vertex_buffer_layout_t *layout =
         &desc->vertex_bindings[binding_index];
 
@@ -659,7 +711,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
       return RN_ERROR_INVALID_ARGUMENT;
 
     for (size_t attribute_index = 0; attribute_index < layout->attribute_count;
-         ++attribute_index)
+         attribute_index++)
 
       if (layout->attributes[attribute_index].location >= 16 ||
           layout->attributes[attribute_index].format > RN_VERTEX_FLOAT32X4)
@@ -671,7 +723,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   if (result)
     return result;
 
-  struct rn_gl_pipeline gpu_pipeline = {0};
+  struct rn_gl_pipeline gpu_pipeline = {.screen_location = -1};
 
   gpu_pipeline.gl_id = _create_shader_program(ctx, desc->shader);
 
@@ -684,7 +736,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   gpu_pipeline.alive = true;
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline.layout_count;
-       ++binding_index) {
+       binding_index++) {
     const struct rn_vertex_buffer_layout_t *layout =
         &desc->vertex_bindings[binding_index];
     gpu_pipeline.layouts[binding_index] = *layout;
@@ -711,7 +763,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
   glUseProgram(gpu_pipeline.gl_id);
 
   for (size_t binding_index = 0; binding_index < desc->uniform_binding_count;
-       ++binding_index) {
+       binding_index++) {
     const struct rn_uniform_binding_t *uniform =
         &desc->uniform_bindings[binding_index];
 
@@ -725,8 +777,15 @@ static rn_result_t _create_pipeline(void *backend_ctx,
     if (location < 0)
       continue;
 
-    if (uniform->type == RN_UNIFORM_VEC2)
+    if (uniform->type == RN_UNIFORM_VEC2) {
       glUniform2f(location, uniform->f_data[0], uniform->f_data[1]);
+      if (strcmp(uniform->name, "u_screen_size") == 0) {
+        gpu_pipeline.screen_location = location;
+        gpu_pipeline.screen_width = uniform->f_data[0];
+        gpu_pipeline.screen_height = uniform->f_data[1];
+        gpu_pipeline.screen_valid = true;
+      }
+    }
     else if (uniform->type == RN_UNIFORM_SAMPLER_2D ||
              uniform->type == RN_UNIFORM_SAMPLER_2D_ARRAY)
       glUniform1i(location, (GLint)uniform->binding);
@@ -753,7 +812,7 @@ static rn_result_t _create_pipeline(void *backend_ctx,
 fail:
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline.layout_count;
-       ++binding_index)
+       binding_index++)
     ctx->alloc->free(gpu_pipeline.attributes[binding_index], ctx->alloc->ctx);
   glDeleteProgram(gpu_pipeline.gl_id);
   return result;
@@ -779,13 +838,14 @@ static void _destroy_pipeline(void *backend_ctx, rn_pipeline_handle_t handle) {
   glDeleteProgram(gpu_pipeline->gl_id);
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
-       ++binding_index)
+       binding_index++)
     ctx->alloc->free(gpu_pipeline->attributes[binding_index], ctx->alloc->ctx);
   gpu_pipeline->alive = false;
 }
 
 static rn_result_t _set_pipeline(void *backend_ctx,
                                  rn_pipeline_handle_t handle) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx)
@@ -795,6 +855,9 @@ static rn_result_t _set_pipeline(void *backend_ctx,
 
   if (!gpu_pipeline)
     return RN_ERROR_INVALID_ARGUMENT;
+
+  if (ctx->state_preserved && ctx->pipeline == handle)
+    return RN_OK;
 
   glUseProgram(gpu_pipeline->gl_id);
   glBindVertexArray(ctx->vertex_array);
@@ -820,7 +883,7 @@ static rn_result_t _set_pipeline(void *backend_ctx,
   ctx->pipeline = handle;
 
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
-       ++binding_index)
+       binding_index++)
     ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
   ctx->index_buffer = RN_INVALID_HANDLE;
   return _gl_check(ctx->log, __func__);
@@ -828,6 +891,7 @@ static rn_result_t _set_pipeline(void *backend_ctx,
 
 static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
                                   size_t first_instance) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_pipeline *gpu_pipeline = _pipeline(ctx, ctx->pipeline);
 
   if (!gpu_pipeline || binding >= RN_GL_MAX_BINDINGS)
@@ -841,7 +905,7 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
   const struct rn_vertex_buffer_layout_t *layout = NULL;
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
-       ++binding_index)
+       binding_index++)
 
     if (gpu_pipeline->layouts[binding_index].binding == binding) {
       layout = &gpu_pipeline->layouts[binding_index];
@@ -854,7 +918,7 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
   glBindBuffer(GL_ARRAY_BUFFER, gpu_buffer->gl_id);
 
   for (size_t binding_index = 0; binding_index < layout->attribute_count;
-       ++binding_index) {
+       binding_index++) {
     const struct rn_vertex_attribute_t *attribute =
         &layout->attributes[binding_index];
     size_t attribute_size = attribute->format == RN_VERTEX_FLOAT32X2 ? 8 : 16;
@@ -885,6 +949,7 @@ static rn_result_t _apply_binding(struct rn_gl_context *ctx, uint32_t binding,
 static rn_result_t _set_vertex_buffer(void *backend_ctx,
                                       rn_buffer_handle_t handle,
                                       uint32_t binding) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || binding >= RN_GL_MAX_BINDINGS)
@@ -895,12 +960,17 @@ static rn_result_t _set_vertex_buffer(void *backend_ctx,
   if (!gpu_buffer || gpu_buffer->target != GL_ARRAY_BUFFER)
     return RN_ERROR_INVALID_ARGUMENT;
 
+  if (ctx->state_preserved && ctx->bindings[binding].handle == handle &&
+      ctx->bindings[binding].instance_base == 0)
+    return RN_OK;
+
   ctx->bindings[binding].handle = handle;
   return _apply_binding(ctx, binding, 0);
 }
 
 static rn_result_t _set_index_buffer(void *backend_ctx,
                                      rn_buffer_handle_t handle) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx)
@@ -910,6 +980,9 @@ static rn_result_t _set_index_buffer(void *backend_ctx,
 
   if (!gpu_buffer || gpu_buffer->target != GL_ELEMENT_ARRAY_BUFFER)
     return RN_ERROR_INVALID_ARGUMENT;
+
+  if (ctx->state_preserved && ctx->index_buffer == handle)
+    return RN_OK;
 
   glBindVertexArray(ctx->vertex_array);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu_buffer->gl_id);
@@ -921,6 +994,7 @@ static rn_result_t _set_uniform_2f(void *backend_ctx,
                                    rn_pipeline_handle_t handle,
                                    const char *name, float value_x,
                                    float value_y) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || !name)
@@ -931,11 +1005,27 @@ static rn_result_t _set_uniform_2f(void *backend_ctx,
   if (!gpu_pipeline)
     return RN_ERROR_INVALID_ARGUMENT;
 
-  glUseProgram(gpu_pipeline->gl_id);
-  GLint location = glGetUniformLocation(gpu_pipeline->gl_id, name);
+  if (ctx->state_preserved && ctx->pipeline == handle &&
+      gpu_pipeline->screen_location >= 0 && gpu_pipeline->screen_valid &&
+      strcmp(name, "u_screen_size") == 0 &&
+      gpu_pipeline->screen_width == value_x && gpu_pipeline->screen_height == value_y)
+    return RN_OK;
 
-  if (location >= 0)
-    glUniform2f(location, value_x, value_y);
+  if (ctx->pipeline != handle)
+    glUseProgram(gpu_pipeline->gl_id);
+  if (gpu_pipeline->screen_location >= 0 && strcmp(name, "u_screen_size") == 0) {
+    if (!ctx->state_preserved || !gpu_pipeline->screen_valid || gpu_pipeline->screen_width != value_x ||
+        gpu_pipeline->screen_height != value_y) {
+      glUniform2f(gpu_pipeline->screen_location, value_x, value_y);
+      gpu_pipeline->screen_width = value_x;
+      gpu_pipeline->screen_height = value_y;
+      gpu_pipeline->screen_valid = true;
+    }
+  } else {
+    GLint location = glGetUniformLocation(gpu_pipeline->gl_id, name);
+    if (location >= 0)
+      glUniform2f(location, value_x, value_y);
+  }
 
   /* Uniform updates must not make GL state tracking silently incorrect. */
 
@@ -947,6 +1037,7 @@ static rn_result_t _set_uniform_2f(void *backend_ctx,
 static rn_result_t
 _draw_indexed_instanced(void *backend_ctx,
                         const struct rn_draw_indexed_instanced_t *draw) {
+  RN_PROFILE_SCOPE();
   struct rn_gl_context *ctx = backend_ctx;
 
   if (!ctx || !draw)
@@ -962,7 +1053,7 @@ _draw_indexed_instanced(void *backend_ctx,
     return RN_ERROR_INVALID_ARGUMENT;
 
   for (size_t binding_index = 0; binding_index < gpu_pipeline->layout_count;
-       ++binding_index) {
+       binding_index++) {
     const struct rn_vertex_buffer_layout_t *layout =
         &gpu_pipeline->layouts[binding_index];
 
@@ -971,13 +1062,13 @@ _draw_indexed_instanced(void *backend_ctx,
     if (layout->step_mode != RN_STEP_INSTANCE)
       continue;
 
-    /* Makes GL read from instance at draw->instance_offset (simulates
-     * glDrawElementsInstancedBaseInstance)*/
-    rn_result_t result =
-        _apply_binding(ctx, layout->binding, draw->instance_offset);
-
-    if (result)
-      return result;
+    /* draw->instance_offset makes GL read from instance at
+     * draw->instance_offset (simulates glDrawElementsInstancedBaseInstance)*/
+    if (ctx->bindings[layout->binding].instance_base != draw->instance_offset) {
+      rn_result_t result = _apply_binding(ctx, layout->binding, draw->instance_offset);
+      if (result)
+        return result;
+    }
   }
 
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer->gl_id);
@@ -1201,11 +1292,7 @@ static rn_result_t _set_texture(void *backend_ctx, uint32_t slot,
     return RN_ERROR_INVALID_ARGUMENT;
 
   struct rn_gl_texture *gpu_texture = _texture(ctx, handle);
-  GLint max_texture_units = 0;
-
-  glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &max_texture_units);
-
-  if (!gpu_texture || slot >= (uint32_t)max_texture_units)
+  if (!gpu_texture || slot >= (uint32_t)ctx->max_texture_units)
     return RN_ERROR_INVALID_ARGUMENT;
 
   glActiveTexture(GL_TEXTURE0 + slot);
@@ -1265,6 +1352,7 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   }
 
   memset(ctx, 0, sizeof(*ctx));
+  ctx->cache_buffer_writes = !getenv("RN_GL_FORCE_BUFFER_UPLOAD");
 
   _RN_GL_LOG_TRACE(log, "creating backend vertex array");
 
@@ -1278,14 +1366,18 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   }
 
   ctx->frag_atlas = frag_atlas ? frag_atlas : _frag_atlas;
-  ctx->frag_dedicated = frag_dedicated ? frag_dedicated : _frag_dedicated;
+  bool single_texture = !frag_dedicated && getenv("RN_GL_SINGLE_TEXTURE");
+  ctx->frag_dedicated = frag_dedicated ? frag_dedicated :
+                        single_texture ? _frag_single_texture : _frag_dedicated;
 
   ctx->pipeline = RN_INVALID_HANDLE;
   ctx->index_buffer = RN_INVALID_HANDLE;
 
   for (size_t binding_index = 0; binding_index < RN_GL_MAX_BINDINGS;
-       ++binding_index)
+       binding_index++)
     ctx->bindings[binding_index].handle = RN_INVALID_HANDLE;
+
+  glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &ctx->max_texture_units);
 
   ctx->alloc = alloc;
   ctx->log = log;
@@ -1295,6 +1387,10 @@ bool rn_gl_backend_implement(struct rn_backend_impl_t *impl,
   glGetIntegerv(GL_VIEWPORT, viewport);
 
   *impl = _rn_gl_dispatch;
+  impl->single_texture_batches = !frag_dedicated &&
+                                  !getenv("RN_GL_FORCE_MULTI_TEXTURE");
+  if (single_texture)
+    impl->texture_slots = 1;
   impl->ctx = ctx;
   impl->initial_canvas = (struct rn_box_u32_t){
       .x = viewport[0] > 0 ? (uint32_t)viewport[0] : 0,
@@ -1326,27 +1422,27 @@ void rn_gl_backend_fini(struct rn_backend_impl_t *backend,
                    ctx->buffer_count, ctx->texture_count, ctx->pipeline_count);
 
   for (size_t resource_index = 0; resource_index < ctx->buffer_count;
-       ++resource_index)
+       resource_index++)
 
     if (ctx->buffers[resource_index].alive)
       glDeleteBuffers(1, &ctx->buffers[resource_index].gl_id);
 
   for (size_t resource_index = 0; resource_index < ctx->texture_count;
-       ++resource_index)
+       resource_index++)
 
     if (ctx->textures[resource_index].alive &&
         !ctx->textures[resource_index].borrowed)
       glDeleteTextures(1, &ctx->textures[resource_index].gl_id);
 
   for (size_t resource_index = 0; resource_index < ctx->pipeline_count;
-       ++resource_index)
+       resource_index++)
 
     if (ctx->pipelines[resource_index].alive) {
       glDeleteProgram(ctx->pipelines[resource_index].gl_id);
 
       for (size_t binding_index = 0;
            binding_index < ctx->pipelines[resource_index].layout_count;
-           ++binding_index)
+           binding_index++)
         ctx->alloc->free(
             ctx->pipelines[resource_index].attributes[binding_index],
             ctx->alloc->ctx);
@@ -1450,5 +1546,31 @@ rn_result_t rn_image_from_gl_texture(struct rn_state_t *state, uint32_t texture,
                    (unsigned int)handle, (unsigned int)texture,
                    (unsigned int)width, (unsigned int)height);
 
+  return RN_OK;
+}
+
+/*
+ * Calling this invalidates every cached binding, because we assume there
+ * was external GL work.
+ */
+rn_result_t rn_gl_set_state_preserved(struct rn_state_t *state, bool preserved) {
+  if (!state || state->backend.create_texture != _create_texture)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  struct rn_gl_context *ctx = state->backend.ctx;
+  ctx->state_preserved = preserved;
+
+  for (size_t i = 0; i < ctx->buffer_count; i++)
+    ctx->buffers[i].last_size = 0;
+
+  for (size_t i = 0; i < ctx->pipeline_count; i++)
+    ctx->pipelines[i].screen_valid = false;
+
+  ctx->viewport_valid = ctx->vao_bound = false;
+
+  ctx->pipeline = RN_INVALID_HANDLE;
+  ctx->index_buffer = RN_INVALID_HANDLE;
+  for (unsigned i = 0; i < RN_GL_MAX_BINDINGS; i++)
+    ctx->bindings[i].handle = RN_INVALID_HANDLE;
   return RN_OK;
 }

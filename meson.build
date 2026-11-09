@@ -1,7 +1,7 @@
 project(
   'runara',
   'c',
-  version: '4.5.0',
+  version: '4.6.0',
   meson_version: '>= 1.2.0',
   default_options: [
     'c_std=c11',
@@ -98,6 +98,8 @@ if build_vulkan
   runara_deps += [dep_vulkan, shaderc_dep]
   runara_cflags += ['-DRN_HAS_VULKAN=1']
 endif
+
+runara_cflags += get_option('c_args')
 
 runara_lib = static_library(
   'runara',
