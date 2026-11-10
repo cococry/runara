@@ -90,6 +90,7 @@ struct rn_vk_texture {
   VmaAllocation allocation;
   uint32_t width, height, layers;
   bool array;
+  bool shm, shm_opaque, shm_initialized;
   bool borrowed;
   bool alive;
   bool dmabuf, acquired;
@@ -169,6 +170,14 @@ struct rn_vk_managed_surface_t {
   struct rn_vk_managed_surface_t *next;
 };
 
+struct rn_vk_staging {
+  VkBuffer buffer;
+  VmaAllocation allocation;
+  void *mapped;
+  size_t capacity, used;
+  struct rn_vk_staging *next;
+};
+
 struct rn_vk_frame {
   VkCommandPool pool;
   VkCommandBuffer command;
@@ -180,6 +189,11 @@ struct rn_vk_frame {
   VkSemaphore *acquire_semaphores, *wait_semaphores;
   VkPipelineStageFlags *wait_stages;
   uint32_t acquire_capacity, wait_count;
+  VkCommandPool shm_pool;
+  VkCommandBuffer shm_command;
+  bool shm_pending;
+  struct rn_vk_staging *staging;
+
 };
 
 struct rn_vk_context {
@@ -261,6 +275,13 @@ struct rn_vk_context {
   const char *frag_atlas;
   const char *vert_src;
 };
+
+static rn_result_t _prepare_shm_uploads(struct rn_vk_context *ctx);
+static rn_result_t _shm_staging_span(struct rn_vk_context *ctx, size_t size,
+                                     struct rn_vk_staging **out);
+static void _shm_barrier(struct rn_vk_context *ctx,
+                          struct rn_vk_texture *texture, bool upload);
+static rn_result_t _flush_shm_uploads(struct rn_vk_context *ctx);
 
 static rn_result_t _dmabuf_init(struct rn_vk_context *ctx);
 static rn_result_t _dmabuf_release_pending(struct rn_vk_context *ctx);
@@ -356,6 +377,7 @@ static rn_result_t _upload_image(struct rn_vk_context *ctx,
 static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
                                             uint32_t width, uint32_t height,
                                             uint32_t layers, bool array,
+                                            bool shm, bool opaque,
                                             const void *pixels, size_t size,
                                             rn_texture_handle_t *out);
 static rn_result_t _descriptor_for_draw(struct rn_vk_context *ctx,
@@ -388,6 +410,177 @@ static const struct rn_backend_impl_t _rn_vk_dispatch = {
     .destroy_texture = _destroy_texture,
     .set_texture = _set_texture,
 };
+
+static rn_result_t _prepare_shm_uploads(struct rn_vk_context *ctx) {
+  RN_PROFILE_SCOPE();
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+
+  if (frame->shm_pending)
+    return RN_OK;
+
+  /* we only recycle staging memory after this frame slot has finished */
+  rn_result_t result = _result(
+      ctx, vkWaitForFences(ctx->device, 1, &frame->fence, VK_TRUE, UINT64_MAX),
+      "vkWaitForFences(shm slot)");
+
+  if (result != RN_OK)
+    return result;
+
+  result = _result(ctx, vkResetCommandPool(ctx->device, frame->shm_pool, 0),
+                   "vkResetCommandPool(shm)");
+
+  if (result != RN_OK)
+    return result;
+
+  const VkCommandBufferBeginInfo begin = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  result = _result(ctx, vkBeginCommandBuffer(frame->shm_command, &begin),
+                   "vkBeginCommandBuffer(shm)");
+
+  if (result != RN_OK)
+    return result;
+
+  for (struct rn_vk_staging *staging = frame->staging; staging;
+       staging = staging->next) {
+    staging->used = 0;
+  }
+
+  frame->shm_pending = true;
+  return RN_OK;
+}
+
+static rn_result_t _shm_staging_span(struct rn_vk_context *ctx, size_t size,
+                                     struct rn_vk_staging **out) {
+  RN_PROFILE_SCOPE();
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+  struct rn_vk_staging **link = &frame->staging;
+  size_t capacity = 256 * 1024;
+
+  while (*link) {
+    struct rn_vk_staging *staging = *link;
+
+    if (size <= staging->capacity - staging->used) {
+      /* return existing staging span that already has the needed size */
+      *out = staging;
+      return RN_OK;
+    }
+
+    if (staging->capacity <= SIZE_MAX / 2)
+      capacity = staging->capacity * 2;
+
+    link = &staging->next;
+  }
+
+  if (capacity < size)
+    capacity = size;
+
+  /* create new staging span with the needed size */
+  struct rn_vk_staging *staging = ctx->alloc->alloc(sizeof(*staging),
+                                                    ctx->alloc->ctx);
+
+  if (!staging)
+    return RN_ERROR_OUT_OF_MEMORY;
+
+  *staging = (struct rn_vk_staging){.capacity = capacity};
+  const VkBufferCreateInfo buffer = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = capacity,
+      .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+  const VmaAllocationCreateInfo allocation = {
+      .usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+      .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
+  };
+  VmaAllocationInfo info;
+  rn_result_t result = _result(
+      ctx, vmaCreateBuffer(ctx->vma, &buffer, &allocation, &staging->buffer,
+                           &staging->allocation, &info),
+      "vmaCreateBuffer(shm staging)");
+
+  if (result != RN_OK) {
+    ctx->alloc->free(staging, ctx->alloc->ctx);
+    return result;
+  }
+
+  staging->mapped = info.pMappedData;
+  *link = staging;
+  *out = staging;
+  return RN_OK;
+}
+
+static void _shm_barrier(struct rn_vk_context *ctx,
+                          struct rn_vk_texture *texture, bool upload) {
+
+  bool initialized = texture->shm_initialized;
+
+  const VkImageMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = upload ? (initialized ? VK_ACCESS_SHADER_READ_BIT : 0)
+                              : VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = upload ? VK_ACCESS_TRANSFER_WRITE_BIT
+                              : VK_ACCESS_SHADER_READ_BIT,
+      .oldLayout = upload ? (initialized ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                         : VK_IMAGE_LAYOUT_UNDEFINED)
+                          : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .newLayout = upload ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                          : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = texture->image,
+      .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .levelCount = 1, .layerCount = 1},
+  };
+
+  VkPipelineStageFlags src = upload
+      ? (initialized ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                      : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT)
+      : VK_PIPELINE_STAGE_TRANSFER_BIT;
+  VkPipelineStageFlags dst = upload ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                                    : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  vkCmdPipelineBarrier(ctx->frames[ctx->frame_index].shm_command, src, dst, 0,
+                       0, NULL, 0, NULL, 1, &barrier);
+}
+
+static rn_result_t _flush_shm_uploads(struct rn_vk_context *ctx) {
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+
+  if (!frame->shm_pending)
+    return RN_OK;
+
+  rn_result_t result = _result(ctx, vkEndCommandBuffer(frame->shm_command),
+                                "vkEndCommandBuffer(shm drain)");
+
+  if (result != RN_OK)
+    return result;
+
+  result = _result(ctx, vkResetFences(ctx->device, 1, &frame->fence),
+                   "vkResetFences(shm drain)");
+
+  if (result != RN_OK)
+    return result;
+
+  const VkSubmitInfo submit = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &frame->shm_command,
+  };
+  result = _result(ctx, vkQueueSubmit(ctx->queue, 1, &submit, frame->fence),
+                   "vkQueueSubmit(shm drain)");
+
+  if (result != RN_OK) {
+    ctx->fatal = true;
+    return result;
+  }
+
+  frame->shm_pending = false;
+  return _result(ctx,
+                  vkWaitForFences(ctx->device, 1, &frame->fence, VK_TRUE,
+                                  UINT64_MAX),
+                  "vkWaitForFences(shm drain)");
+}
 
 static rn_result_t _result(struct rn_vk_context *ctx, VkResult status,
                            const char *op) {
@@ -1310,6 +1503,16 @@ static void _destroy_frame_commands(struct rn_vk_context *ctx) {
     if (frame->render_done)
       vkDestroySemaphore(ctx->device, frame->render_done, NULL);
 
+    while (frame->staging) {
+      struct rn_vk_staging *staging = frame->staging;
+      frame->staging = staging->next;
+      vmaDestroyBuffer(ctx->vma, staging->buffer, staging->allocation);
+      ctx->alloc->free(staging, ctx->alloc->ctx);
+    }
+
+    if (frame->shm_pool)
+      vkDestroyCommandPool(ctx->device, frame->shm_pool, NULL);
+
     if (frame->pool)
       vkDestroyCommandPool(ctx->device, frame->pool, NULL);
   }
@@ -1361,6 +1564,23 @@ static rn_result_t _create_frame_commands(struct rn_vk_context *ctx) {
         ctx,
         vkAllocateCommandBuffers(ctx->device, &command_info, &frame->command),
         "vkAllocateCommandBuffers(frame)");
+
+    if (result != RN_OK)
+      return result;
+
+    /* create shm */
+    result = _result(
+        ctx, vkCreateCommandPool(ctx->device, &pool_info, NULL, &frame->shm_pool),
+        "vkCreateCommandPool(shm)");
+
+    if (result != RN_OK)
+      return result;
+
+    VkCommandBufferAllocateInfo shm_info = command_info;
+    shm_info.commandPool = frame->shm_pool;
+    result = _result(ctx, vkAllocateCommandBuffers(ctx->device, &shm_info,
+                                                  &frame->shm_command),
+                     "vkAllocateCommandBuffers(shm)");
 
     if (result != RN_OK)
       return result;
@@ -1673,45 +1893,47 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
   /* render pass is began for both managed and external mode */
 
-  const VkRenderPassBeginInfo pass = {
-      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-      .renderPass = ctx->render_pass,
-      .framebuffer = framebuffer,
-      .renderArea = {{0, 0}, extent},
-  };
+  {
+    RN_PROFILE_SCOPE_NAMED("Vulkan: Begin render pass");
+    const VkRenderPassBeginInfo pass = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = ctx->render_pass,
+        .framebuffer = framebuffer,
+        .renderArea = {{0, 0}, extent},
+    };
 
-  vkCmdBeginRenderPass(frame->command, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBeginRenderPass(frame->command, &pass, VK_SUBPASS_CONTENTS_INLINE);
 
-  ctx->command_buffer = frame->command;
-  ctx->frame_extent = extent;
-  ctx->frame_active = true;
-  ctx->extent_x = x;
-  ctx->extent_y = y;
-  ctx->extent_width = width;
-  ctx->extent_height = height;
-  ctx->pipeline = RN_INVALID_HANDLE;
-  ctx->index_buffer = RN_INVALID_HANDLE;
+    ctx->command_buffer = frame->command;
+    ctx->frame_extent = extent;
+    ctx->frame_active = true;
+    ctx->extent_x = x;
+    ctx->extent_y = y;
+    ctx->extent_width = width;
+    ctx->extent_height = height;
+    ctx->pipeline = RN_INVALID_HANDLE;
+    ctx->index_buffer = RN_INVALID_HANDLE;
 
-  for (uint32_t i = 0; i < RN_VK_MAX_BINDINGS; ++i)
-    ctx->vertex_buffers[i] = RN_INVALID_HANDLE;
+    for (uint32_t i = 0; i < RN_VK_MAX_BINDINGS; ++i)
+      ctx->vertex_buffers[i] = RN_INVALID_HANDLE;
 
-  for (uint32_t i = 0; i < RN_VK_MAX_TEXTURES; ++i)
-    ctx->bound_textures[i] = RN_INVALID_HANDLE;
+    for (uint32_t i = 0; i < RN_VK_MAX_TEXTURES; ++i)
+      ctx->bound_textures[i] = RN_INVALID_HANDLE;
 
-  VkRect2D scissor = {{(int32_t)x, (int32_t)y}, {width, height}};
+    VkRect2D scissor = {{(int32_t)x, (int32_t)y}, {width, height}};
 
-  if (x >= extent.width || y >= extent.height) {
+    if (x >= extent.width || y >= extent.height) {
 
-    scissor.extent = (VkExtent2D){0, 0};
+      scissor.extent = (VkExtent2D){0, 0};
 
-  } else {
+    } else {
 
-    if (scissor.extent.width > extent.width - x)
-      scissor.extent.width = extent.width - x;
+      if (scissor.extent.width > extent.width - x)
+        scissor.extent.width = extent.width - x;
 
-    if (scissor.extent.height > extent.height - y)
-      scissor.extent.height = extent.height - y;
-  }
+      if (scissor.extent.height > extent.height - y)
+        scissor.extent.height = extent.height - y;
+    }
 
   const VkViewport viewport = {
       (float)x, (float)y, (float)width, (float)height, 0.0f, 1.0f,
@@ -1719,6 +1941,8 @@ static rn_result_t _begin_frame(void *backend_ctx, uint32_t x, uint32_t y,
 
   vkCmdSetViewport(frame->command, 0, 1, &viewport);
   vkCmdSetScissor(frame->command, 0, 1, &scissor);
+
+  }
 
   return RN_OK;
 }
@@ -1841,6 +2065,14 @@ static rn_result_t _end_frame(void *backend_ctx) {
   else
     render_done = frame->render_done;
 
+  if (frame->shm_pending) {
+    result = _result(ctx, vkEndCommandBuffer(frame->shm_command),
+                     "vkEndCommandBuffer(shm)");
+
+    if (result != RN_OK)
+      return result;
+  }
+
   const VkSubmitInfo submit = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .waitSemaphoreCount = frame->wait_count,
@@ -1852,16 +2084,30 @@ static rn_result_t _end_frame(void *backend_ctx) {
       .pSignalSemaphores = render_done ? &render_done : NULL,
   };
 
+  /* copies can run before presentation and client acquire fences are ready */
+  const VkSubmitInfo submissions[2] = {
+      {
+          .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+          .commandBufferCount = 1,
+          .pCommandBuffers = &frame->shm_command,
+      },
+      submit,
+  };
   VkResult status;
+
   {
     RN_PROFILE_SCOPE_NAMED("Vulkan: submit frame");
-    status = vkQueueSubmit(ctx->queue, 1, &submit, frame->fence);
+    status = vkQueueSubmit(ctx->queue, frame->shm_pending ? 2u : 1u,
+                           frame->shm_pending ? submissions : &submit,
+                           frame->fence);
   }
 
   if (status != VK_SUCCESS) {
     ctx->fatal = true;
     return _result(ctx, status, "vkQueueSubmit(frame)");
   }
+
+  frame->shm_pending = false;
 
   if (target)
     target->render_fence = frame->fence;
@@ -3104,6 +3350,7 @@ static rn_result_t _upload_image(struct rn_vk_context *ctx,
 static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
                                             uint32_t width, uint32_t height,
                                             uint32_t layers, bool array,
+                                            bool shm, bool opaque,
                                             const void *pixels, size_t size,
                                             rn_texture_handle_t *out) {
   RN_PROFILE_SCOPE();
@@ -3125,12 +3372,14 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
       .height = height,
       .layers = layers,
       .array = array,
+      .shm = shm,
+      .shm_opaque = opaque,
   };
 
   const VkImageCreateInfo image_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,
-      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .format = shm ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM,
       .extent = {width, height, 1},
       .mipLevels = 1,
       .arrayLayers = layers,
@@ -3154,8 +3403,10 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
   const VkImageViewCreateInfo view_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
       .image = texture.image,
+      .components = {.a = opaque ? VK_COMPONENT_SWIZZLE_ONE
+                                 : VK_COMPONENT_SWIZZLE_IDENTITY},
       .viewType = array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
-      .format = VK_FORMAT_R8G8B8A8_UNORM,
+      .format = shm ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_R8G8B8A8_UNORM,
       .subresourceRange =
           {
               .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3164,8 +3415,19 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
           },
   };
 
+  VkImageViewCreateInfo native_view = view_info;
+
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  if (shm) {
+    native_view.components = (VkComponentMapping){
+        VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_R,
+        VK_COMPONENT_SWIZZLE_A,
+        opaque ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_B};
+  }
+#endif
+
   result = _result(
-      ctx, vkCreateImageView(ctx->device, &view_info, NULL, &texture.view),
+      ctx, vkCreateImageView(ctx->device, &native_view, NULL, &texture.view),
       "vkCreateImageView");
 
   if (result != RN_OK)
@@ -3190,16 +3452,19 @@ static rn_result_t _create_texture_internal(struct rn_vk_context *ctx,
   if (result != RN_OK)
     goto fail;
 
-  result = _begin_upload(ctx);
+  if (!shm) {
+    result = _begin_upload(ctx);
 
-  if (result != RN_OK)
-    goto fail;
-  _image_barrier(ctx, texture.image, VK_IMAGE_LAYOUT_UNDEFINED,
-                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layers);
-  result = _end_upload(ctx);
+    if (result != RN_OK)
+      goto fail;
 
-  if (result != RN_OK)
-    goto fail;
+    _image_barrier(ctx, texture.image, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layers);
+    result = _end_upload(ctx);
+
+    if (result != RN_OK)
+      goto fail;
+  }
 
   if (pixels) {
     result = _upload_image(ctx, &texture, 0, 0, 0, width, height, pixels, size);
@@ -3238,7 +3503,7 @@ static rn_result_t _create_texture(void *backend_ctx,
   if (!desc || desc->format != RN_TEXTURE_RGBA8 || !pixels)
     return RN_ERROR_INVALID_ARGUMENT;
   return _create_texture_internal(backend_ctx, desc->width, desc->height, 1,
-                                  false, pixels, size, out);
+                                  false, false, false, pixels, size, out);
 }
 
 static rn_result_t
@@ -3250,7 +3515,7 @@ _create_texture_array(void *backend_ctx,
   if (!desc || desc->format != RN_TEXTURE_RGBA8)
     return RN_ERROR_INVALID_ARGUMENT;
   return _create_texture_internal(backend_ctx, desc->width, desc->height,
-                                  desc->layers, true, NULL, 0, out);
+                                  desc->layers, true, false, false, NULL, 0, out);
 }
 
 static rn_result_t
@@ -3281,7 +3546,8 @@ static rn_result_t _write_texture(void *backend_ctx,
 
   struct rn_vk_texture *texture = _texture(ctx, write->texture);
 
-  if (!texture || texture->borrowed || texture->array || write->layer)
+  if (!texture || texture->borrowed || texture->shm || texture->array ||
+      write->layer)
     return RN_ERROR_INVALID_ARGUMENT;
 
   return _upload_image(ctx, texture, 0, write->x, write->y, write->width,
@@ -3309,8 +3575,12 @@ static void _destroy_texture(void *backend_ctx, rn_texture_handle_t handle) {
 
   _dmabuf_forget(ctx, handle);
 
-  if (!ctx->tearing_down)
+  if (!ctx->tearing_down) {
+    if (_flush_shm_uploads(ctx) != RN_OK)
+      return;
+
     vkDeviceWaitIdle(ctx->device);
+  }
 
   if (!texture->conversion)
     vkDestroySampler(ctx->device, texture->sampler, NULL);
@@ -3463,11 +3733,11 @@ failed:
   if (ctx->staging)
     vmaDestroyBuffer(ctx->vma, ctx->staging, ctx->staging_allocation);
 
-  if (ctx->vma)
-    vmaDestroyAllocator(ctx->vma);
-
   if (ctx->device)
     _destroy_frame_commands(ctx);
+
+  if (ctx->vma)
+    vmaDestroyAllocator(ctx->vma);
 
   if (ctx->device) {
     _destroy_external_targets(ctx);
@@ -3540,10 +3810,10 @@ void rn_vk_backend_fini(struct rn_backend_impl_t *backend,
   if (ctx->staging)
     vmaDestroyBuffer(ctx->vma, ctx->staging, ctx->staging_allocation);
 
+  _destroy_frame_commands(ctx);
+
   if (ctx->vma)
     vmaDestroyAllocator(ctx->vma);
-
-  _destroy_frame_commands(ctx);
 
   while (ctx->surfaces) {
     ctx->current_surface = ctx->surfaces;
@@ -3577,6 +3847,154 @@ static struct rn_vk_context *_state_context(struct rn_state_t *state) {
     return NULL;
 
   return state->backend.ctx;
+}
+
+rn_result_t rn_vk_image_upload_shm(struct rn_state_t *state,
+                                   const struct rn_vk_shm_desc_t *desc,
+                                   const struct rn_box_u32_t *regions,
+                                   size_t region_count,
+                                   struct rn_image_t *image) {
+  RN_PROFILE_SCOPE();
+  struct rn_vk_context *ctx = _state_context(state);
+
+  if (!ctx || ctx->frame_active || ctx->fatal || !desc || !image ||
+      !desc->data || !desc->width || !desc->height ||
+      (uint64_t)desc->width * 4 > desc->stride ||
+      (uint64_t)(desc->height - 1) * desc->stride +
+          (uint64_t)desc->width * 4 > desc->size)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  const struct rn_box_u32_t full = {0, 0, desc->width, desc->height};
+
+  if (!regions) {
+    // we upload the entire buffer if no damage region is suppied
+    regions = &full;
+    region_count = 1;
+  }
+
+  bool create = !image->width && !image->height;
+
+  if (create && (region_count != 1 || regions[0].x || regions[0].y ||
+                 regions[0].width != desc->width ||
+                 regions[0].height != desc->height))
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  for (size_t i = 0; i < region_count; i++) {
+    const struct rn_box_u32_t *box = &regions[i];
+
+    if (!box->width || !box->height || box->x >= desc->width ||
+        box->y >= desc->height || box->width > desc->width - box->x ||
+        box->height > desc->height - box->y ||
+        (uint64_t)box->width * box->height > SIZE_MAX / 4)
+      return RN_ERROR_INVALID_ARGUMENT;
+  }
+
+  rn_result_t result;
+
+  if (create) {
+    rn_texture_handle_t handle;
+    result = _create_texture_internal(ctx, desc->width, desc->height, 1,
+                                      false, true, desc->opaque, NULL, 0,
+                                      &handle);
+
+    if (result != RN_OK)
+      return result;
+
+    *image = (struct rn_image_t){.storage = RN_IMAGE_DEDICATED,
+                                 .texture = handle,
+                                 .width = desc->width,
+                                 .height = desc->height,
+                                 .uv = {0, 0, 1, 1},
+                                 .premultiplied = true};
+  }
+
+  struct rn_vk_texture *texture = _texture(ctx, image->texture);
+
+  if (image->storage != RN_IMAGE_DEDICATED || !texture || !texture->shm ||
+      texture->width != desc->width ||
+      texture->height != desc->height || texture->shm_opaque != desc->opaque)
+    return RN_ERROR_INVALID_ARGUMENT;
+
+  if (!region_count)
+    return RN_OK;
+
+  result = _prepare_shm_uploads(ctx);
+
+  if (result != RN_OK)
+    return result;
+
+  struct rn_vk_frame *frame = &ctx->frames[ctx->frame_index];
+  bool copied = false;
+
+  for (size_t i = 0; i < region_count; i++) {
+    const struct rn_box_u32_t *box = &regions[i];
+    size_t row = (size_t)box->width * 4;
+    size_t size = row * box->height;
+    size_t alignment = ctx->properties.limits.nonCoherentAtomSize;
+
+    if (alignment < ctx->properties.limits.optimalBufferCopyOffsetAlignment)
+      alignment = ctx->properties.limits.optimalBufferCopyOffsetAlignment;
+
+    if (alignment < 4)
+      alignment = 4;
+
+    if (size > SIZE_MAX - (alignment - 1)) {
+      result = RN_ERROR_OVERFLOW;
+      break;
+    }
+
+    size_t reserved = (size + alignment - 1) & ~(alignment - 1);
+    struct rn_vk_staging *staging;
+    result = _shm_staging_span(ctx, reserved, &staging);
+
+    if (result != RN_OK)
+      break;
+
+    size_t offset = staging->used;
+    uint8_t *dst = (uint8_t *)staging->mapped + offset;
+    const uint8_t *src = (const uint8_t *)desc->data +
+                         (size_t)box->y * desc->stride + (size_t)box->x * 4;
+
+    if (desc->stride == row) {
+      memcpy(dst, src, size);
+    } else {
+      for (uint32_t y = 0; y < box->height; y++) {
+        memcpy(dst, src, row);
+        dst += row;
+        src += desc->stride;
+      }
+    }
+
+    result = _result(ctx, vmaFlushAllocation(ctx->vma, staging->allocation,
+                                             offset, size),
+                     "vmaFlushAllocation(shm staging)");
+
+    if (result != RN_OK)
+      break;
+
+    if (!copied) {
+      _shm_barrier(ctx, texture, true);
+      copied = true;
+    }
+
+    const VkBufferImageCopy copy = {
+        .bufferOffset = offset,
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .layerCount = 1},
+        .imageOffset = {(int32_t)box->x, (int32_t)box->y, 0},
+        .imageExtent = {box->width, box->height, 1},
+    };
+    vkCmdCopyBufferToImage(frame->shm_command, staging->buffer, texture->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    staging->used += reserved;
+  }
+
+  if (copied) {
+    _shm_barrier(ctx, texture, false);
+    texture->shm_initialized = true;
+  }
+
+  return result;
 }
 
 rn_result_t
@@ -3815,6 +4233,11 @@ rn_result_t rn_vk_wait_for_render(struct rn_state_t *state) {
 
   if (!ctx || ctx->frame_active || ctx->fatal)
     return RN_ERROR_BAD_STATE;
+
+  rn_result_t flushed = _flush_shm_uploads(ctx);
+
+  if (flushed != RN_OK)
+    return flushed;
 
   if (!ctx->frame_submitted)
     return _dmabuf_release_pending(ctx);

@@ -677,7 +677,7 @@ rn_result_t rn_end(struct rn_state_t *state) {
   struct rn_renderer_t *renderer = &state->renderer;
   struct rn_backend_impl_t *backend = &state->backend;
 
-  if (!renderer->initialized || !renderer->frame_active)
+  if (!renderer->initialized  || !renderer->frame_active)
     return RN_ERROR_BAD_STATE;
 
   rn_result_t result = RN_OK;

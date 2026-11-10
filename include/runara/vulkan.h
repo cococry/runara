@@ -239,3 +239,27 @@ rn_result_t rn_vk_image_from_dmabuf(struct rn_state_t                *state,
 rn_result_t rn_vk_image_acquire_dmabuf(struct rn_state_t *state,
                                        const struct rn_image_t *image,
                                        int acquire_fence_fd);
+
+/* Native-endian ARGB8888/XRGB8888 SHM data. The caller retains data ownership.
+ * damaged pixels are copied into frame-owned staging memory in
+ * rn_vk_image_upload_shm()
+ */
+struct rn_vk_shm_desc_t {
+  uint32_t width, height, stride;
+  const void *data;
+  size_t size;
+  bool opaque;
+};
+
+/* Create a dedicated SHM image (if the image param is zero inited), or update
+ * its damaged regions. NULL regions uploads the whole image. A new image
+ * requires a full upload. Call before rn_begin(); copies and rendering share
+ * one submission. Staging storage is recycled only after that submission
+ * finishes. Format, opacity and dimensions must remain unchanged for an
+ * existing image.
+ */
+rn_result_t rn_vk_image_upload_shm(struct rn_state_t             *state,
+                                   const struct rn_vk_shm_desc_t *desc,
+                                   const struct rn_box_u32_t     *regions,
+                                   size_t                         region_count,
+                                   struct rn_image_t             *image);
