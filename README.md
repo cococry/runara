@@ -111,7 +111,7 @@ Make sure you have the following build dependencies installed before building Ru
 meson, ninja, gcc, pkg-config, cglm
 ```
 
-Depending on the rendering backends you want, you will also need:
+Depending on what you want to build, you will also need:
 
 - **OpenGL:** OpenGL development libraries: `libgl-dev`
 - **Vulkan:** Vulkan development libraries, GLSL, Python: `libvulkan-dev`, `glslang-tools`, `python3`
